@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0f172a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Apun Play Store Pro</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;}
+.frame{position:fixed;inset:0;z-index:1;transition:opacity 0.25s ease;}
+.frame iframe{width:100%;height:100%;border:none;display:block;}
+.frame.hidden{opacity:0;pointer-events:none;z-index:0;}
+
+/* THREE DOT BUTTON */
+.menu-fab{
+  position:fixed;top:13px;right:13px;z-index:99999;
+  width:40px;height:40px;border-radius:50%;
+  background:rgba(0,0,0,0.52);
+  backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+  border:1.5px solid rgba(255,255,255,0.16);
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;box-shadow:0 3px 14px rgba(0,0,0,0.45);
+  transition:background 0.18s, transform 0.15s;
+  -webkit-tap-highlight-color:transparent;
+  user-select:none;
+}
+.menu-fab:active{background:rgba(0,0,0,0.78);transform:scale(0.93);}
+.menu-fab svg{width:18px;height:18px;fill:#fff;display:block;}
+
+/* OVERLAY */
+.overlay{position:fixed;inset:0;z-index:99997;display:none;}
+.overlay.open{display:block;}
+
+/* DROPDOWN */
+.dropdown{
+  position:fixed;top:61px;right:13px;z-index:99998;
+  background:rgba(16,18,24,0.97);
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  border:1px solid rgba(255,255,255,0.1);
+  border-radius:16px;overflow:hidden;
+  box-shadow:0 12px 40px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.04);
+  transform:scale(0.88) translateY(-10px);transform-origin:top right;
+  opacity:0;pointer-events:none;
+  transition:transform 0.2s cubic-bezier(0.175,0.885,0.32,1.15), opacity 0.18s ease;
+  min-width:192px;
+}
+.dropdown.open{transform:scale(1) translateY(0);opacity:1;pointer-events:auto;}
+
+.dd-header{
+  padding:10px 16px 8px;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:10px;font-weight:700;color:rgba(255,255,255,0.35);
+  letter-spacing:1.2px;text-transform:uppercase;
+}
+.dd-item{
+  display:flex;align-items:center;gap:13px;
+  padding:13px 16px;cursor:pointer;
+  color:#f0f0f0;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:14px;font-weight:500;
+  border-top:1px solid rgba(255,255,255,0.055);
+  transition:background 0.13s;
+  -webkit-tap-highlight-color:transparent;
+  user-select:none;
+}
+.dd-item:first-of-type{border-top:none;}
+.dd-item:active{background:rgba(255,255,255,0.08);}
+.dd-item.active{color:#4ade80;}
+.dd-item .ico{font-size:19px;width:26px;text-align:center;flex-shrink:0;}
+.dd-item .check{margin-left:auto;font-size:13px;opacity:0;}
+.dd-item.active .check{opacity:1;}
+</style>
+</head>
+<body>
+
+<!-- PLAY STORE FRAME (default) -->
+<div class="frame" id="frame-playstore">
+  <iframe src="playstore.html" id="iframe-playstore"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-storage-access-by-user-activation"
+    allow="autoplay; camera; microphone; clipboard-read; clipboard-write"
+    loading="eager">
+  </iframe>
+</div>
+
+<!-- MOVIE ZONE FRAME -->
+<div class="frame hidden" id="frame-movie">
+  <iframe src="movie.html" id="iframe-movie"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-storage-access-by-user-activation"
+    allow="autoplay; camera; microphone; clipboard-read; clipboard-write"
+    loading="lazy">
+  </iframe>
+</div>
+
+<!-- EARNING ZONE FRAME -->
+<div class="frame hidden" id="frame-earning">
+  <iframe src="earning/index.html" id="iframe-earning"
+    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-storage-access-by-user-activation"
+    allow="autoplay; camera; microphone; clipboard-read; clipboard-write"
+    loading="lazy">
+  </iframe>
+</div>
+
+<!-- THREE DOT BUTTON -->
+<button class="menu-fab" id="menuFab" onclick="toggleMenu()" aria-label="Menu">
+  <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="19" r="2.2"/></svg>
+</button>
+
+<div class="overlay" id="overlay" onclick="closeMenu()"></div>
+
+<div class="dropdown" id="dropdown">
+  <div class="dd-header">Switch Zone</div>
+  <div class="dd-item active" id="item-playstore" onclick="switchSite('playstore')">
+    <span class="ico">🎮</span>
+    <span>Play Store</span>
+    <span class="check">✓</span>
+  </div>
+  <div class="dd-item" id="item-movie" onclick="switchSite('movie')">
+    <span class="ico">🎬</span>
+    <span>Movie Zone</span>
+    <span class="check">✓</span>
+  </div>
+  <div class="dd-item" id="item-earning" onclick="switchSite('earning')">
+    <span class="ico">💰</span>
+    <span>Earning Zone</span>
+    <span class="check">✓</span>
+  </div>
+</div>
+
+<script>
+var current = 'playstore';
+var loaded = { playstore: true, movie: false, earning: false };
+
+function toggleMenu() {
+  var dd = document.getElementById('dropdown');
+  var ov = document.getElementById('overlay');
+  if (dd.classList.contains('open')) {
+    dd.classList.remove('open');
+    ov.classList.remove('open');
+  } else {
+    dd.classList.add('open');
+    ov.classList.add('open');
+  }
+}
+
+function closeMenu() {
+  document.getElementById('dropdown').classList.remove('open');
+  document.getElementById('overlay').classList.remove('open');
+}
+
+function switchSite(site) {
+  closeMenu();
+  if (site === current) return;
+
+  document.getElementById('frame-' + current).classList.add('hidden');
+  document.getElementById('item-' + current).classList.remove('active');
+
+  current = site;
+  document.getElementById('frame-' + site).classList.remove('hidden');
+  document.getElementById('item-' + site).classList.add('active');
+}
+</script>
+</body>
+</html>
