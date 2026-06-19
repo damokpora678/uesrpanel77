@@ -395,76 +395,8 @@ header, .bottom-sheet, #admin-pop-up > div {
         </div>
     </div>
 
-    <section id="screen-login" class="screen-layer p-8 flex flex-col justify-center">
-        <div class="mb-12">
-            <img src="https://upload.wikimedia.org/wikipedia/commons/d/d7/Google_Play_Store_2022_icon.svg" class="w-12 mb-6">
-            <h1 class="text-3xl font-bold mb-2">Sign in</h1>
-            <p class="text-gray-600">to continue to Apun Pro Store</p>
-        </div>
-        <div class="space-y-6">
-            <div class="relative">
-                <input type="email" id="login-email" class="w-full p-4 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all peer placeholder-transparent" placeholder="Email">
-                <label class="absolute left-4 -top-2.5 bg-white px-1 text-sm text-blue-600 transition-all peer-placeholder-shown:top-4 peer-placeholder-shown:text-gray-400 peer-placeholder-shown:text-base peer-focus:-top-2.5 peer-focus:text-blue-600 peer-focus:text-sm">Email or phone</label>
-            </div>
-            <div class="relative">
-                <input type="password" id="login-pass" class="w-full p-4 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none transition-all peer placeholder-transparent" placeholder="Password">
-                <label class="absolute left-4 -top-2.5 bg-white px-1 text-sm text-blue-600 transition-all peer-placeholder-shown:top-4 peer-placeholder-shown:text-gray-400 peer-placeholder-shown:text-base peer-focus:-top-2.5 peer-focus:text-blue-600 peer-focus:text-sm">Enter your password</label>
-            </div>
-            <div class="flex justify-between items-center pt-4">
-                <button onclick="navigateTo('signup')" class="text-blue-600 font-bold text-sm">Create account</button>
-                <button onclick="handleLogin()" class="bg-blue-600 text-white px-8 py-2.5 rounded-lg font-medium shadow-md">Next</button>
-            </div>
-        </div>
-    </section>
-<section id="screen-signup" class="screen-layer screen-off-right p-8 flex flex-col justify-center">
-    
-    <div class="mb-12">
-        <h1 class="text-3xl font-bold mb-2">Create account</h1>
-        <p class="text-gray-600">Create your Apun Pro Store account</p>
-    </div>
 
-    <div class="space-y-5">
 
-        <!-- NAME -->
-        <input type="text" id="signup-name" placeholder="Full Name"
-            class="w-full p-4 border border-gray-300 rounded-lg outline-none focus:border-green-600">
-
-        <!-- EMAIL -->
-        <input type="email" id="signup-email" placeholder="Email"
-            class="w-full p-4 border border-gray-300 rounded-lg outline-none focus:border-green-600">
-
-        <!-- PASSWORD -->
-        <div class="relative">
-            <input type="password" id="signup-pass" placeholder="Password"
-                class="w-full p-4 border border-gray-300 rounded-lg outline-none pr-12 focus:border-green-600">
-            
-            <i onclick="togglePass('signup-pass', this)" 
-               class="fa fa-eye absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer text-gray-500"></i>
-        </div>
-
-        <!-- CONFIRM PASSWORD -->
-        <div class="relative">
-            <input type="password" id="signup-confirm" placeholder="Confirm Password"
-                class="w-full p-4 border border-gray-300 rounded-lg outline-none pr-12 focus:border-green-600">
-            
-            <i onclick="togglePass('signup-confirm', this)" 
-               class="fa fa-eye absolute right-4 top-1/2 -translate-y-1/2 cursor-pointer text-gray-500"></i>
-        </div>
-
-        <!-- BUTTONS -->
-        <div class="flex justify-between items-center pt-4">
-            <button onclick="navigateTo('login')" class="text-gray-600 text-sm font-medium">
-                Back to login
-            </button>
-
-            <button onclick="handleSignup()" 
-                class="bg-green-600 text-white px-8 py-2.5 rounded-lg font-medium shadow">
-                Create
-            </button>
-        </div>
-
-    </div>
-</section>
     <section id="screen-main" class="screen-layer screen-off-right bg-[#f8f9fa]">
         <header class="bg-white px-4 pt-4 pb-2 sticky top-0 z-[100] shadow-sm">
             <div class="search-wrapper flex items-center px-4 py-3 mb-2">
@@ -746,7 +678,7 @@ header, .bottom-sheet, #admin-pop-up > div {
 
         // --- NAVIGATION ENGINE ---
         function navigateTo(id) {
-            const screens = ['login', 'signup', 'main', 'detail', 'profile'];
+            const screens = ['main', 'detail', 'profile'];
             screens.forEach(s => {
                 const el = document.getElementById('screen-' + s);
                 if (el) {
@@ -782,15 +714,8 @@ header, .bottom-sheet, #admin-pop-up > div {
     }
 }
 
-        auth.onAuthStateChanged(user => {
-            if(user) {
-                updateUserUI(user);
-                navigateTo('main');
-                loadData();
-            } else {
-                navigateTo('login');
-            }
-        });
+        navigateTo('main');
+        loadData();
 
         function updateUserUI(user) {
             const char = (user.displayName || user.email || 'A').charAt(0).toUpperCase();
@@ -1222,16 +1147,13 @@ function updateInputStars(val) {
     });
 }
 
-// 2. Submit Review to Firebase
 document.getElementById('submit-review-btn').onclick = function() {
     const user = auth.currentUser;
-    if(!user) return alert("Please login first!");
-
     const reviewText = document.getElementById('user-review-text').value;
     const appId = activeApp.id;
 
-    db.ref(`apps/${appId}/reviews/${user.uid}`).set({
-        userName: user.displayName || "Anonymous",
+    db.ref(`apps/${appId}/reviews/${user ? user.uid : 'guest_' + Date.now()}`).set({
+        userName: (user && (user.displayName || user.email)) ? (user.displayName || user.email.split('@')[0]) : 'Anonymous',
         rating: selectedStars,
         comment: reviewText,
         timestamp: Date.now()
@@ -1361,15 +1283,12 @@ function loadReviews(appId) {
 // --- FIXED: POST REVIEW WITH PROPER NAME ---
 document.getElementById('submit-review-btn').onclick = function() {
     const user = auth.currentUser;
-    if(!user) return alert("Pehle login toh kar lo! 😒");
-
     const reviewText = document.getElementById('user-review-text').value;
     const appId = activeApp.id;
     
-    // Lazy Fix: Agar displayName null hai, toh email ka pehla part use kar lo
-    const finalName = user.displayName || user.email.split('@')[0];
+    const finalName = (user && user.displayName) ? user.displayName : (user && user.email) ? user.email.split('@')[0] : 'Anonymous';
 
-    db.ref(`apps/${appId}/reviews/${user.uid}`).set({
+    db.ref(`apps/${appId}/reviews/${user ? user.uid : 'guest_' + Date.now()}`).set({
         userName: finalName,
         rating: selectedStars,
         comment: reviewText,
@@ -1557,7 +1476,7 @@ function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
     adUnlockRequired = requiredCount || 3;
 
     const user = auth.currentUser;
-    if (!user) { alert("Please login first."); return; }
+    const uid = user ? user.uid : 'guest';
 
     const titleText = globalSettings.unlockPopupText || 'Complete Ads To Unlock Download';
     const rewardMsg = globalSettings.rewardMessage || 'Watch ads to unlock the download.';
@@ -1568,7 +1487,7 @@ function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
     document.getElementById('unlock-required').innerText = adUnlockRequired;
     document.getElementById('unlock-network-tag').innerText = 'Powered by ' + network.charAt(0).toUpperCase() + network.slice(1);
 
-    db.ref('unlocks/' + user.uid + '/' + appId).once('value', snap => {
+    db.ref('unlocks/' + uid + '/' + appId).once('value', snap => {
         adUnlockCurrent = snap.val() || 0;
         updateUnlockUI();
         document.getElementById('ad-unlock-modal').classList.remove('hidden');
@@ -1599,12 +1518,12 @@ function updateUnlockUI() {
 function triggerAdClick() {
     if (adUnlockPending) return;
     const user = auth.currentUser;
-    if (!user) { alert("Please login first."); return; }
+    const uid = user ? user.uid : 'guest';
 
     const smartlinkUrl = (adUnlockConfig && adUnlockConfig.smartlinkUrl) ? adUnlockConfig.smartlinkUrl : null;
 
     if (!smartlinkUrl) {
-        recordUnlock(user.uid);
+        recordUnlock(uid);
         return;
     }
 
@@ -1618,7 +1537,7 @@ function triggerAdClick() {
     setTimeout(() => {
         btn.disabled = false;
         adUnlockPending = false;
-        recordUnlock(user.uid);
+        recordUnlock(uid);
     }, 4000);
 }
 
