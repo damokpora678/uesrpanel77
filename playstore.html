@@ -674,6 +674,20 @@ header, .bottom-sheet, #admin-pop-up > div {
         let MASTER_DATA = {};
         let activeApp = null;
         let downInterval = null;
+        let unlockWatcherInterval = null;
+
+        // --- APP UNLOCK SYSTEM: TRUSTED SERVER TIME ---
+        // Using Firebase's serverTimeOffset keeps unlock timing safe from
+        // device clock changes / localStorage tampering. All unlock expiry
+        // checks below use getServerTime() instead of plain Date.now().
+        const UNLOCK_DURATION_MS = 2 * 60 * 60 * 1000; // 2 hours
+        let serverTimeOffset = 0;
+        db.ref('.info/serverTimeOffset').on('value', snap => {
+            serverTimeOffset = snap.val() || 0;
+        });
+        function getServerTime() {
+            return Date.now() + serverTimeOffset;
+        }
 
 
         // --- NAVIGATION ENGINE ---
@@ -816,14 +830,7 @@ if (app.screenshots && app.screenshots.length > 0) {
             const reviewText = document.getElementById('user-review-text');
             const submitBtn = document.getElementById('submit-review-btn');
 
-            if(localStorage.getItem('inst_'+id)) {
-                btn.innerText = "Open";
-                btn.onclick = () => window.open(app.apk, '_blank');
-                progressBox.classList.add('hidden');
-                btn.classList.remove('hidden');
-                ratingBox.style.pointerEvents = "auto";
-                ratingBox.style.opacity = "1";
-            } else {
+            {
                 progressBox.classList.add('hidden');
                 btn.classList.remove('hidden');
                 ratingBox.style.pointerEvents = "none";
@@ -834,30 +841,25 @@ if (app.screenshots && app.screenshots.length > 0) {
                 db.ref('settings/adlock').once('value', snap => {
                     const adCfg = snap.val() || {};
                     const adLockEnabled = adCfg.enabled !== false;
-                    const freeDownload = (db.ref('settings').once('value'));
 
                     db.ref('settings').once('value', settingSnap => {
                         const globalSettings = settingSnap.val() || {};
                         const freeMode = !!globalSettings.freeDownload;
 
                         if (!adLockEnabled || freeMode) {
-                            btn.innerText = "Install";
-                            btn.onclick = startDownload;
+                            // Ad-lock turned off by admin -- unrestricted, unchanged legacy behavior
+                            ratingBox.style.pointerEvents = "auto";
+                            ratingBox.style.opacity = "1";
+                            if (localStorage.getItem('inst_' + id)) {
+                                btn.innerText = "✅ Open";
+                                btn.onclick = () => window.open(app.apk, '_blank');
+                            } else {
+                                btn.innerText = "Install";
+                                btn.onclick = startDownload;
+                            }
                         } else {
-                            const user = auth.currentUser;
-                            const requiredCount = adCfg.requiredCount || globalSettings.requiredAdCount || 3;
-                            const unlockRef = db.ref('unlocks/' + (user ? user.uid : 'guest') + '/' + id);
-
-                            unlockRef.once('value', uSnap => {
-                                const completedCount = uSnap.val() || 0;
-                                if (completedCount >= requiredCount) {
-                                    btn.innerText = "Install";
-                                    btn.onclick = startDownload;
-                                } else {
-                                    btn.innerText = "🔒 Unlock to Install";
-                                    btn.onclick = () => showAdUnlockModal(id, adCfg, globalSettings, requiredCount);
-                                }
-                            });
+                            // --- NEW: TEMPORARY (2-HOUR) AD-VERIFIED UNLOCK SYSTEM ---
+                            checkUnlockStatus(id, app, adCfg, globalSettings);
                         }
                     });
                 });
@@ -865,6 +867,73 @@ if (app.screenshots && app.screenshots.length > 0) {
 
             navigateTo('detail');
         }
+
+        // --- APP UNLOCK SYSTEM: TIME-BASED VALIDITY CHECK ---
+        // Reads the unlock record from Firebase (never localStorage) and
+        // compares against trusted server time. This is what makes the
+        // unlock temporary and unbypassable via local storage edits.
+        function checkUnlockStatus(id, app, adCfg, globalSettings) {
+            const btn = document.getElementById('main-install-btn');
+            const ratingBox = document.getElementById('user-star-input');
+            const reviewText = document.getElementById('user-review-text');
+            const submitBtn = document.getElementById('submit-review-btn');
+
+            const user = auth.currentUser;
+            const uid = user ? user.uid : 'guest';
+            const requiredCount = adCfg.requiredCount || globalSettings.requiredAdCount || 3;
+
+            db.ref('unlocks/' + uid + '/' + id).once('value', uSnap => {
+                const rec = uSnap.val();
+                const now = getServerTime();
+                const isUnlocked = !!(rec && typeof rec === 'object' && rec.expiryTime && now < rec.expiryTime);
+
+                if (isUnlocked) {
+                    ratingBox.style.pointerEvents = "auto";
+                    ratingBox.style.opacity = "1";
+                    if (localStorage.getItem('inst_' + id)) {
+                        btn.innerText = "✅ Open";
+                        btn.onclick = () => window.open(app.apk, '_blank');
+                    } else {
+                        btn.innerText = "Install";
+                        btn.onclick = startDownload;
+                    }
+                } else {
+                    ratingBox.style.pointerEvents = "none";
+                    ratingBox.style.opacity = "0.5";
+                    reviewText.classList.add('hidden');
+                    submitBtn.classList.add('hidden');
+
+                    btn.innerText = "🔒 Unlock to Install";
+                    btn.onclick = () => showAdUnlockModal(id, adCfg, globalSettings, requiredCount);
+                }
+            }, err => {
+                // If Firebase denies/fails this read, fail closed (stay
+                // locked) and tell the user visibly instead of doing nothing.
+                btn.innerText = "🔒 Unlock to Install";
+                btn.onclick = () => showUnlockToast('Could not check unlock status. Check your internet connection and try again.');
+            });
+
+            // Live watcher: if the 2-hour unlock expires while the user is
+            // still sitting on this app's page, flip it back to Locked
+            // automatically -- matches "Auto Check" + "Anti-Bypass" requirement.
+            if (unlockWatcherInterval) clearInterval(unlockWatcherInterval);
+            unlockWatcherInterval = setInterval(() => {
+                if (!activeApp || activeApp.id !== id) {
+                    clearInterval(unlockWatcherInterval);
+                    return;
+                }
+                db.ref('unlocks/' + uid + '/' + id).once('value', uSnap => {
+                    const rec = uSnap.val();
+                    const now = getServerTime();
+                    const stillUnlocked = !!(rec && rec.expiryTime && now < rec.expiryTime);
+                    if (!stillUnlocked && btn.innerText.indexOf('Unlock to Install') === -1) {
+                        clearInterval(unlockWatcherInterval);
+                        checkUnlockStatus(id, app, adCfg, globalSettings);
+                    }
+                });
+            }, 60000); // re-check every 60s
+        }
+
 
         function startDownload() {
             const btn = document.getElementById('main-install-btn');
@@ -1452,7 +1521,8 @@ function loadProfile() {
         <button id="unlock-watch-btn" onclick="triggerAdClick()" class="w-full bg-[#01875f] text-white py-4 rounded-2xl font-black text-base tracking-wide active:scale-95 transition-all shadow-lg">
             ▶ Watch Ad to Unlock
         </button>
-        <p class="text-center text-[11px] text-gray-400 mt-3" id="unlock-network-tag">Powered by Monetag</p>
+        <p id="ad-timer-display" class="text-center text-sm font-bold text-green-700 mt-3 min-h-[20px]"></p>
+        <p class="text-center text-[11px] text-gray-400 mt-1" id="unlock-network-tag">Powered by Monetag</p>
     </div>
 </div>
 
@@ -1464,15 +1534,49 @@ function loadProfile() {
 </style>
 
 <script>
+// ============================================================
+//  SMARTLINK AD UNLOCK SYSTEM
+//  Adsterra / Monetag Smartlink দিয়ে কাজ করে।
+//  Admin Panel → Settings → Adlock → smartlinkUrl সেট করুন।
+// ============================================================
+
 let adUnlockAppId = null;
 let adUnlockConfig = null;
+let adUnlockGlobalSettings = null;
 let adUnlockRequired = 3;
 let adUnlockCurrent = 0;
 let adUnlockPending = false;
+let adTimerInterval = null;
+let adWindowRef = null;
 
+// ── Toast (Android WebView-safe message box) ──────────────────
+function showUnlockToast(msg) {
+    let toast = document.getElementById('unlock-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'unlock-toast';
+        Object.assign(toast.style, {
+            position: 'fixed', bottom: '28px', left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(20,20,20,0.94)', color: '#fff',
+            padding: '12px 18px', borderRadius: '12px',
+            fontSize: '14px', lineHeight: '1.4',
+            zIndex: '99999', maxWidth: '85vw',
+            textAlign: 'center', boxShadow: '0 4px 14px rgba(0,0,0,0.35)'
+        });
+        document.body.appendChild(toast);
+    }
+    toast.innerText = msg;
+    toast.style.display = 'block';
+    clearTimeout(toast._hideTimer);
+    toast._hideTimer = setTimeout(() => { toast.style.display = 'none'; }, 3500);
+}
+
+// ── Modal Open ────────────────────────────────────────────────
 function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
     adUnlockAppId = appId;
     adUnlockConfig = adCfg;
+    adUnlockGlobalSettings = globalSettings;
     adUnlockRequired = requiredCount || 3;
 
     const user = auth.currentUser;
@@ -1485,79 +1589,182 @@ function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
     document.getElementById('unlock-popup-title').innerText = titleText;
     document.getElementById('unlock-reward-msg').innerText = rewardMsg;
     document.getElementById('unlock-required').innerText = adUnlockRequired;
-    document.getElementById('unlock-network-tag').innerText = 'Powered by ' + network.charAt(0).toUpperCase() + network.slice(1);
+    document.getElementById('unlock-network-tag').innerText =
+        'Powered by ' + network.charAt(0).toUpperCase() + network.slice(1);
 
     db.ref('unlocks/' + uid + '/' + appId).once('value', snap => {
-        adUnlockCurrent = snap.val() || 0;
+        const rec = snap.val();
+        adUnlockCurrent = (rec && rec.progress) || 0;
         updateUnlockUI();
         document.getElementById('ad-unlock-modal').classList.remove('hidden');
+    }, () => {
+        showUnlockToast('Internet connection চেক করুন এবং আবার চেষ্টা করুন।');
     });
 }
 
+// ── Modal Close ───────────────────────────────────────────────
 function closeAdUnlockModal() {
     document.getElementById('ad-unlock-modal').classList.add('hidden');
     adUnlockPending = false;
+    clearAdTimer();
 }
 
+// ── UI Update ─────────────────────────────────────────────────
 function updateUnlockUI() {
     document.getElementById('unlock-current').innerText = adUnlockCurrent;
     const perc = Math.min((adUnlockCurrent / adUnlockRequired) * 100, 100);
     document.getElementById('unlock-progress-bar').style.width = perc + '%';
+
     const btn = document.getElementById('unlock-watch-btn');
+    btn.disabled = false;
+
     if (adUnlockCurrent >= adUnlockRequired) {
-        btn.innerText = '✅ Unlocked! Tap to Install';
-        btn.onclick = () => { closeAdUnlockModal(); startDownload(); };
-        document.getElementById('main-install-btn').innerText = 'Install';
-        document.getElementById('main-install-btn').onclick = startDownload;
+        btn.innerText = '✅ Unlocked for 2 Hours';
+        btn.style.background = '#00b359';
+        btn.onclick = () => closeAdUnlockModal();
     } else {
         btn.innerText = '▶ Watch Ad to Unlock';
+        btn.style.background = '#01875f';
         btn.onclick = triggerAdClick;
     }
 }
 
+// ── Timer Display ─────────────────────────────────────────────
+function clearAdTimer() {
+    if (adTimerInterval) { clearInterval(adTimerInterval); adTimerInterval = null; }
+    const timerEl = document.getElementById('ad-timer-display');
+    if (timerEl) timerEl.innerText = '';
+}
+
+function startAdCountdown(seconds, btn) {
+    clearAdTimer();
+    const timerEl = document.getElementById('ad-timer-display');
+    let remaining = seconds;
+
+    const tick = () => {
+        if (timerEl) timerEl.innerText = '⏳ অপেক্ষা করুন... ' + remaining + 's';
+        if (remaining <= 0) {
+            clearAdTimer();
+            return;
+        }
+        remaining--;
+    };
+    tick();
+    adTimerInterval = setInterval(tick, 1000);
+}
+
+// ── MAIN: Smartlink Ad Trigger ────────────────────────────────
+// বাটনে ক্লিক → সাথে সাথে Smartlink নতুন ট্যাবে খুলবে (instant!)
+// তারপর ব্যাকগ্রাউন্ডে 10 সেকেন্ড টাইমার → progress count করবে।
 function triggerAdClick() {
     if (adUnlockPending) return;
-    const user = auth.currentUser;
-    const uid = user ? user.uid : 'guest';
 
-    const smartlinkUrl = (adUnlockConfig && adUnlockConfig.smartlinkUrl) ? adUnlockConfig.smartlinkUrl : null;
+    const smartlinkUrl = adUnlockConfig && adUnlockConfig.smartlinkUrl;
+    const btn = document.getElementById('unlock-watch-btn');
 
-    if (!smartlinkUrl) {
-        recordUnlock(uid);
+    if (!smartlinkUrl || smartlinkUrl.trim() === '') {
+        showUnlockToast('Ad link সেট নেই। Admin Panel → Settings → Adlock → Smartlink URL সেট করুন।');
         return;
     }
 
     adUnlockPending = true;
-    const btn = document.getElementById('unlock-watch-btn');
-    btn.innerText = '⏳ Opening Ad...';
     btn.disabled = true;
+    btn.innerText = '📢 Ad খুলছে...';
 
-    const adWindow = window.open(smartlinkUrl, '_blank');
+    // ── INSTANT: সাথে সাথে নতুন ট্যাবে অ্যাড খুলুন ──
+    try {
+        adWindowRef = window.open(smartlinkUrl, '_blank');
+    } catch (e) {
+        adWindowRef = null;
+    }
+
+    // Popup blocker হলে location.href দিয়ে চেষ্টা করুন
+    if (!adWindowRef) {
+        const a = document.createElement('a');
+        a.href = smartlinkUrl;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+
+    // ── 10 সেকেন্ড টাইমার → তারপর progress count ──
+    const WAIT_SECONDS = 10;
+    btn.innerText = '⏳ অপেক্ষা করুন... ' + WAIT_SECONDS + 's';
+    startAdCountdown(WAIT_SECONDS, btn);
 
     setTimeout(() => {
-        btn.disabled = false;
-        adUnlockPending = false;
-        recordUnlock(uid);
-    }, 4000);
+        clearAdTimer();
+        recordAdProgress();
+    }, WAIT_SECONDS * 1000);
 }
 
-function recordUnlock(uid) {
+// ── Firebase-তে progress save করুন ──────────────────────────
+function recordAdProgress() {
+    const user = auth.currentUser;
+    const uid = user ? user.uid : 'guest';
     const ref = db.ref('unlocks/' + uid + '/' + adUnlockAppId);
-    ref.once('value', snap => {
-        const current = snap.val() || 0;
-        const next = current + 1;
-        ref.set(next).then(() => {
-            adUnlockCurrent = next;
-            updateUnlockUI();
-            db.ref('statistics/totalUnlocks').transaction(v => (v || 0) + 1);
-            db.ref('users/' + uid + '/unlocks').transaction(v => (v || 0) + 1);
-            if (next >= adUnlockRequired) {
-                confetti({ particleCount: 80, spread: 60, origin: { y: 0.7 } });
-            }
+
+    ref.transaction(curr => {
+        const data = (curr && typeof curr === 'object') ? curr : {};
+        return Object.assign({}, data, {
+            userId: uid,
+            appId: adUnlockAppId,
+            progress: (data.progress || 0) + 1
         });
+    }).then(result => {
+        adUnlockPending = false;
+        const data = result.snapshot && result.snapshot.val();
+        const next = (data && data.progress) || 1;
+        adUnlockCurrent = next;
+
+        if (next >= adUnlockRequired) {
+            grantUnlock(uid);
+        } else {
+            updateUnlockUI();
+        }
+    }).catch(() => {
+        adUnlockPending = false;
+        const btn = document.getElementById('unlock-watch-btn');
+        btn.disabled = false;
+        btn.innerText = '▶ Watch Ad to Unlock';
+        showUnlockToast('Progress save হয়নি। Internet connection চেক করুন।');
+    });
+}
+
+// ── 2-ঘন্টার জন্য Unlock দিন ─────────────────────────────────
+function grantUnlock(uid) {
+    const unlockTime = getServerTime();
+    const expiryTime = unlockTime + UNLOCK_DURATION_MS;
+
+    db.ref('unlocks/' + uid + '/' + adUnlockAppId).update({
+        userId: uid,
+        appId: adUnlockAppId,
+        unlockTime: unlockTime,
+        expiryTime: expiryTime,
+        progress: 0
+    }).then(() => {
+        db.ref('statistics/totalUnlocks').transaction(v => (v || 0) + 1);
+        db.ref('users/' + uid + '/unlocks').transaction(v => (v || 0) + 1);
+
+        adUnlockCurrent = adUnlockRequired;
+        updateUnlockUI();
+        confetti({ particleCount: 80, spread: 60, origin: { y: 0.7 } });
+
+        setTimeout(() => {
+            closeAdUnlockModal();
+            if (activeApp && activeApp.id === adUnlockAppId) {
+                checkUnlockStatus(adUnlockAppId, activeApp, adUnlockConfig, adUnlockGlobalSettings);
+            }
+        }, 600);
+    }).catch(() => {
+        showUnlockToast('Unlock save হয়নি। Internet connection চেক করুন।');
     });
 }
 </script>
+
+
 
 </body>
 </html>
