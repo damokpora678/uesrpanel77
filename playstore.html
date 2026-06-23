@@ -1606,7 +1606,10 @@ function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
 function closeAdUnlockModal() {
     document.getElementById('ad-unlock-modal').classList.add('hidden');
     adUnlockPending = false;
+    _adStartHidden = null;
+    _adTimeSpent = 0;
     clearAdTimer();
+    _removeAdVerifyListeners();
 }
 
 // ── UI Update ─────────────────────────────────────────────────
@@ -1654,32 +1657,59 @@ function startAdCountdown(seconds, btn) {
 }
 
 // ── MAIN: Smartlink Ad Trigger ────────────────────────────────
-// বাটনে ক্লিক → সাথে সাথে Smartlink নতুন ট্যাবে খুলবে (instant!)
-// তারপর ব্যাকগ্রাউন্ডে 10 সেকেন্ড টাইমার → progress count করবে।
+// সিস্টেম:
+//  1. বাটনে ক্লিক → সাথে সাথে অ্যাড নতুন ট্যাবে খুলবে
+//  2. পেজ background হওয়ার সময় থেকে টাইমার শুরু (ইউজার অ্যাডে আছে)
+//  3. ইউজার ব্যাক করলে (পেজ visible হলে) কতক্ষণ ছিল চেক করবে
+//  4. MIN_AD_TIME (15s) পূরণ হলে → count +1
+//  5. পূরণ না হলে → "আরো Xs থাকুন" বলবে, count হবে না
+
+const MIN_AD_SECONDS = 15; // অ্যাডে কমপক্ষে কতক্ষণ থাকতে হবে
+
+let _adStartHidden = null;   // কখন পেজ hide হয়েছিল
+let _adTimeSpent = 0;        // মোট কতক্ষণ অ্যাডে ছিল (ms)
+let _adVerifyBound = false;  // event listener একবারই লাগাবো
+let _adVerifyHandler = null;
+
+function _removeAdVerifyListeners() {
+    if (_adVerifyHandler) {
+        document.removeEventListener('visibilitychange', _adVerifyHandler);
+        window.removeEventListener('focus', _adVerifyHandler);
+        _adVerifyHandler = null;
+        _adVerifyBound = false;
+    }
+}
+
 function triggerAdClick() {
     if (adUnlockPending) return;
 
     const smartlinkUrl = adUnlockConfig && adUnlockConfig.smartlinkUrl;
     const btn = document.getElementById('unlock-watch-btn');
+    const timerEl = document.getElementById('ad-timer-display');
 
     if (!smartlinkUrl || smartlinkUrl.trim() === '') {
         showUnlockToast('Ad link সেট নেই। Admin Panel → Settings → Adlock → Smartlink URL সেট করুন।');
         return;
     }
 
+    // ── রিসেট ──
     adUnlockPending = true;
+    _adTimeSpent = 0;
+    _adStartHidden = null;
+    _removeAdVerifyListeners();
+
     btn.disabled = true;
     btn.innerText = '📢 Ad খুলছে...';
+    if (timerEl) timerEl.innerText = '';
 
-    // ── INSTANT: সাথে সাথে নতুন ট্যাবে অ্যাড খুলুন ──
+    // ── INSTANT: সাথে সাথে নতুন ট্যাবে অ্যাড খোলো ──
     try {
         adWindowRef = window.open(smartlinkUrl, '_blank');
     } catch (e) {
         adWindowRef = null;
     }
-
-    // Popup blocker হলে location.href দিয়ে চেষ্টা করুন
     if (!adWindowRef) {
+        // Popup blocker ফলব্যাক
         const a = document.createElement('a');
         a.href = smartlinkUrl;
         a.target = '_blank';
@@ -1689,15 +1719,70 @@ function triggerAdClick() {
         document.body.removeChild(a);
     }
 
-    // ── 10 সেকেন্ড টাইমার → তারপর progress count ──
-    const WAIT_SECONDS = 10;
-    btn.innerText = '⏳ অপেক্ষা করুন... ' + WAIT_SECONDS + 's';
-    startAdCountdown(WAIT_SECONDS, btn);
+    // ── পেজ hide হওয়ার সাথে সাথে টাইমার শুরু ──
+    // (ইউজার অ্যাড ট্যাবে গেলে এই পেজ hidden হবে)
+    let _waitingForHide = true;
+    const _hideTimeout = setTimeout(() => {
+        // ৩ সেকেন্ডেও hide না হলে (popup blocked / same tab) fallback timer
+        if (_waitingForHide) {
+            _waitingForHide = false;
+            _adStartHidden = Date.now();
+            btn.innerText = '⏳ ' + MIN_AD_SECONDS + 's পরে ব্যাক করুন';
+            startAdCountdown(MIN_AD_SECONDS, btn);
+        }
+    }, 3000);
 
-    setTimeout(() => {
-        clearAdTimer();
-        recordAdProgress();
-    }, WAIT_SECONDS * 1000);
+    // ── visibilitychange: পেজ hide → অ্যাডে গেছে, visible → ফিরে এসেছে ──
+    _adVerifyHandler = function() {
+        const isHidden = document.hidden;
+
+        if (isHidden && _waitingForHide) {
+            // প্রথমবার hide → অ্যাড ট্যাবে গেছে
+            _waitingForHide = false;
+            clearTimeout(_hideTimeout);
+            _adStartHidden = Date.now();
+
+            // বাটনে countdown দেখাও
+            btn.innerText = '⏳ অ্যাডে থাকুন ' + MIN_AD_SECONDS + 's';
+            startAdCountdown(MIN_AD_SECONDS, btn);
+
+        } else if (isHidden && _adStartHidden === null) {
+            // দ্বিতীয়বার বা পরের hide
+            _adStartHidden = Date.now();
+
+        } else if (!isHidden && _adStartHidden !== null) {
+            // পেজ visible → ইউজার ব্যাক করেছে
+            const elapsed = Date.now() - _adStartHidden;
+            _adTimeSpent += elapsed;
+            _adStartHidden = null;
+            clearAdTimer();
+
+            const spentSeconds = Math.floor(_adTimeSpent / 1000);
+            const needed = MIN_AD_SECONDS * 1000;
+
+            if (_adTimeSpent >= needed) {
+                // ✅ যথেষ্ট সময় দেখেছে → count করো
+                _removeAdVerifyListeners();
+                btn.innerText = '✅ ভেরিফাই হচ্ছে...';
+                if (timerEl) timerEl.innerText = '✅ ভেরিফাই সম্পন্ন!';
+                setTimeout(() => {
+                    if (timerEl) timerEl.innerText = '';
+                    recordAdProgress();
+                }, 500);
+            } else {
+                // ❌ যথেষ্ট সময় দেয়নি → আবার অ্যাডে যেতে বলো
+                const remaining = Math.ceil((needed - _adTimeSpent) / 1000);
+                btn.disabled = false;
+                btn.innerText = '▶ আরো ' + remaining + 's দেখুন';
+                if (timerEl) timerEl.innerText = '⚠️ আরো ' + remaining + ' সেকেন্ড অ্যাডে থাকতে হবে';
+                adUnlockPending = false;
+            }
+        }
+    };
+
+    document.addEventListener('visibilitychange', _adVerifyHandler);
+    window.addEventListener('focus', _adVerifyHandler);
+    _adVerifyBound = true;
 }
 
 // ── Firebase-তে progress save করুন ──────────────────────────
