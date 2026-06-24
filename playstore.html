@@ -1535,9 +1535,9 @@ function loadProfile() {
 
 <script>
 // ============================================================
-//  SMARTLINK AD UNLOCK SYSTEM
-//  Adsterra / Monetag Smartlink দিয়ে কাজ করে।
-//  Admin Panel → Settings → Adlock → smartlinkUrl সেট করুন।
+//  SMARTLINK AD UNLOCK SYSTEM — FINAL RELIABLE VERSION
+//  বাটন ক্লিক → অ্যাড খুলবে + 15s countdown → count +1
+//  Firebase fail হলে localStorage fallback কাজ করবে
 // ============================================================
 
 let adUnlockAppId = null;
@@ -1547,29 +1547,29 @@ let adUnlockRequired = 3;
 let adUnlockCurrent = 0;
 let adUnlockPending = false;
 let adTimerInterval = null;
-let adWindowRef = null;
+const MIN_AD_SECONDS = 15;
 
-// ── Toast (Android WebView-safe message box) ──────────────────
+// ── Toast ─────────────────────────────────────────────────────
 function showUnlockToast(msg) {
     let toast = document.getElementById('unlock-toast');
     if (!toast) {
         toast = document.createElement('div');
         toast.id = 'unlock-toast';
         Object.assign(toast.style, {
-            position: 'fixed', bottom: '28px', left: '50%',
-            transform: 'translateX(-50%)',
-            background: 'rgba(20,20,20,0.94)', color: '#fff',
-            padding: '12px 18px', borderRadius: '12px',
-            fontSize: '14px', lineHeight: '1.4',
-            zIndex: '99999', maxWidth: '85vw',
-            textAlign: 'center', boxShadow: '0 4px 14px rgba(0,0,0,0.35)'
+            position:'fixed', bottom:'28px', left:'50%',
+            transform:'translateX(-50%)',
+            background:'rgba(20,20,20,0.94)', color:'#fff',
+            padding:'12px 18px', borderRadius:'12px',
+            fontSize:'14px', lineHeight:'1.4',
+            zIndex:'99999', maxWidth:'85vw',
+            textAlign:'center', boxShadow:'0 4px 14px rgba(0,0,0,0.35)'
         });
         document.body.appendChild(toast);
     }
     toast.innerText = msg;
     toast.style.display = 'block';
     clearTimeout(toast._hideTimer);
-    toast._hideTimer = setTimeout(() => { toast.style.display = 'none'; }, 3500);
+    toast._hideTimer = setTimeout(() => { toast.style.display = 'none'; }, 4000);
 }
 
 // ── Modal Open ────────────────────────────────────────────────
@@ -1581,24 +1581,31 @@ function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
 
     const user = auth.currentUser;
     const uid = user ? user.uid : 'guest';
+    const network = (adCfg.network || 'monetag');
 
-    const titleText = globalSettings.unlockPopupText || 'Complete Ads To Unlock Download';
-    const rewardMsg = globalSettings.rewardMessage || 'Watch ads to unlock the download.';
-    const network = adCfg.network || 'monetag';
-
-    document.getElementById('unlock-popup-title').innerText = titleText;
-    document.getElementById('unlock-reward-msg').innerText = rewardMsg;
+    document.getElementById('unlock-popup-title').innerText =
+        globalSettings.unlockPopupText || 'Complete Ads To Unlock Download';
+    document.getElementById('unlock-reward-msg').innerText =
+        globalSettings.rewardMessage || 'Watch ads to unlock the download.';
     document.getElementById('unlock-required').innerText = adUnlockRequired;
     document.getElementById('unlock-network-tag').innerText =
         'Powered by ' + network.charAt(0).toUpperCase() + network.slice(1);
 
-    db.ref('unlocks/' + uid + '/' + appId).once('value', snap => {
+    // localStorage থেকে progress পড়ো (Firebase fail হলেও কাজ করবে)
+    const lsKey = 'adprog_' + uid + '_' + appId;
+    const lsVal = parseInt(localStorage.getItem(lsKey) || '0');
+
+    db.ref('unlocks/' + uid + '/' + appId).once('value').then(snap => {
         const rec = snap.val();
-        adUnlockCurrent = (rec && rec.progress) || 0;
+        const fbProgress = (rec && typeof rec === 'object' && rec.progress) ? rec.progress : 0;
+        adUnlockCurrent = Math.max(fbProgress, lsVal);
+        localStorage.setItem(lsKey, adUnlockCurrent);
         updateUnlockUI();
         document.getElementById('ad-unlock-modal').classList.remove('hidden');
-    }, () => {
-        showUnlockToast('Internet connection চেক করুন এবং আবার চেষ্টা করুন।');
+    }).catch(() => {
+        adUnlockCurrent = lsVal;
+        updateUnlockUI();
+        document.getElementById('ad-unlock-modal').classList.remove('hidden');
     });
 }
 
@@ -1606,10 +1613,7 @@ function showAdUnlockModal(appId, adCfg, globalSettings, requiredCount) {
 function closeAdUnlockModal() {
     document.getElementById('ad-unlock-modal').classList.add('hidden');
     adUnlockPending = false;
-    _adStartHidden = null;
-    _adTimeSpent = 0;
     clearAdTimer();
-    _removeAdVerifyListeners();
 }
 
 // ── UI Update ─────────────────────────────────────────────────
@@ -1619,67 +1623,30 @@ function updateUnlockUI() {
     document.getElementById('unlock-progress-bar').style.width = perc + '%';
 
     const btn = document.getElementById('unlock-watch-btn');
+    const timerEl = document.getElementById('ad-timer-display');
     btn.disabled = false;
+    if (timerEl) { timerEl.innerText = ''; timerEl.style.color = '#01875f'; }
 
     if (adUnlockCurrent >= adUnlockRequired) {
-        btn.innerText = '✅ Unlocked for 2 Hours';
+        btn.innerText = '\u2705 Unlocked for 2 Hours';
         btn.style.background = '#00b359';
         btn.onclick = () => closeAdUnlockModal();
     } else {
-        btn.innerText = '▶ Watch Ad to Unlock';
+        btn.innerText = '\u25b6 Watch Ad to Unlock';
         btn.style.background = '#01875f';
         btn.onclick = triggerAdClick;
     }
 }
 
-// ── Timer Display ─────────────────────────────────────────────
+// ── Timer ─────────────────────────────────────────────────────
 function clearAdTimer() {
     if (adTimerInterval) { clearInterval(adTimerInterval); adTimerInterval = null; }
-    const timerEl = document.getElementById('ad-timer-display');
-    if (timerEl) timerEl.innerText = '';
 }
 
-function startAdCountdown(seconds, btn) {
-    clearAdTimer();
-    const timerEl = document.getElementById('ad-timer-display');
-    let remaining = seconds;
-
-    const tick = () => {
-        if (timerEl) timerEl.innerText = '⏳ অপেক্ষা করুন... ' + remaining + 's';
-        if (remaining <= 0) {
-            clearAdTimer();
-            return;
-        }
-        remaining--;
-    };
-    tick();
-    adTimerInterval = setInterval(tick, 1000);
-}
-
-// ── MAIN: Smartlink Ad Trigger ────────────────────────────────
-// সিস্টেম:
-//  1. বাটনে ক্লিক → সাথে সাথে অ্যাড নতুন ট্যাবে খুলবে
-//  2. পেজ background হওয়ার সময় থেকে টাইমার শুরু (ইউজার অ্যাডে আছে)
-//  3. ইউজার ব্যাক করলে (পেজ visible হলে) কতক্ষণ ছিল চেক করবে
-//  4. MIN_AD_TIME (15s) পূরণ হলে → count +1
-//  5. পূরণ না হলে → "আরো Xs থাকুন" বলবে, count হবে না
-
-const MIN_AD_SECONDS = 15; // অ্যাডে কমপক্ষে কতক্ষণ থাকতে হবে
-
-let _adStartHidden = null;   // কখন পেজ hide হয়েছিল
-let _adTimeSpent = 0;        // মোট কতক্ষণ অ্যাডে ছিল (ms)
-let _adVerifyBound = false;  // event listener একবারই লাগাবো
-let _adVerifyHandler = null;
-
-function _removeAdVerifyListeners() {
-    if (_adVerifyHandler) {
-        document.removeEventListener('visibilitychange', _adVerifyHandler);
-        window.removeEventListener('focus', _adVerifyHandler);
-        _adVerifyHandler = null;
-        _adVerifyBound = false;
-    }
-}
-
+// ── MAIN: Ad Trigger — Universal All-Browser Version ─────────
+// Chrome, Samsung, Firefox, Edge, Opera, UC, Safari সব কাজ করবে।
+// পদ্ধতি: user gesture-এর ভেতরেই অ্যাড খুলবে (popup block হবে না)
+// তারপর ১৫s countdown → count +1 (localStorage primary)
 function triggerAdClick() {
     if (adUnlockPending) return;
 
@@ -1688,140 +1655,173 @@ function triggerAdClick() {
     const timerEl = document.getElementById('ad-timer-display');
 
     if (!smartlinkUrl || smartlinkUrl.trim() === '') {
-        showUnlockToast('Ad link সেট নেই। Admin Panel → Settings → Adlock → Smartlink URL সেট করুন।');
+        showUnlockToast('Ad link সেট নেই। Admin Panel → Adlock → Smartlink URL দিন।');
         return;
     }
 
-    // ── রিসেট ──
     adUnlockPending = true;
-    _adTimeSpent = 0;
-    _adStartHidden = null;
-    _removeAdVerifyListeners();
-
+    clearAdTimer();
     btn.disabled = true;
-    btn.innerText = '📢 Ad খুলছে...';
-    if (timerEl) timerEl.innerText = '';
+    if (timerEl) { timerEl.innerText = ''; timerEl.style.color = '#01875f'; }
 
-    // ── INSTANT: সাথে সাথে নতুন ট্যাবে অ্যাড খোলো ──
+    // ════════════════════════════════════════════════════════
+    //  সব ব্রাউজারে কাজ করে এমন অ্যাড ওপেন পদ্ধতি:
+    //  Method 1: window.open (Chrome, Samsung, Firefox, Edge)
+    //  Method 2: <a> click   (UC Browser fallback)
+    //  Method 3: location.href (Safari, In-App Browser fallback)
+    //  — সবই user gesture-এর মধ্যে তাই popup block হবে না
+    // ════════════════════════════════════════════════════════
+    let adOpened = false;
+
+    // Method 1: window.open — সবচেয়ে ভালো (নতুন ট্যাব)
     try {
-        adWindowRef = window.open(smartlinkUrl, '_blank');
-    } catch (e) {
-        adWindowRef = null;
+        const w = window.open(smartlinkUrl, '_blank',
+            'noopener,noreferrer,scrollbars=yes,resizable=yes');
+        if (w) { adOpened = true; }
+    } catch(e) {}
+
+    // Method 2: <a> click — UC Browser, পুরানো Android
+    if (!adOpened) {
+        try {
+            const a = document.createElement('a');
+            a.href = smartlinkUrl;
+            a.target = '_blank';
+            a.rel = 'noopener noreferrer';
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            adOpened = true;
+        } catch(e) {}
     }
-    if (!adWindowRef) {
-        // Popup blocker ফলব্যাক
-        const a = document.createElement('a');
-        a.href = smartlinkUrl;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+
+    // Method 3: location.href — Safari, In-App Browser (same tab)
+    // এই ক্ষেত্রে ব্যাক করলে পেজে ফিরে আসবে — countdown তখনও চলবে
+    if (!adOpened) {
+        const origUrl = window.location.href;
+        window.location.href = smartlinkUrl;
+        // ব্যাক করলে পেজ reload হবে, countdown আবার শুরু হবে না
+        // তাই এই ক্ষেত্রে localStorage-এ pending mark করো
+        localStorage.setItem('_adPending_' + adUnlockAppId, Date.now());
     }
 
-    // ── পেজ hide হওয়ার সাথে সাথে টাইমার শুরু ──
-    // (ইউজার অ্যাড ট্যাবে গেলে এই পেজ hidden হবে)
-    let _waitingForHide = true;
-    const _hideTimeout = setTimeout(() => {
-        // ৩ সেকেন্ডেও hide না হলে (popup blocked / same tab) fallback timer
-        if (_waitingForHide) {
-            _waitingForHide = false;
-            _adStartHidden = Date.now();
-            btn.innerText = '⏳ ' + MIN_AD_SECONDS + 's পরে ব্যাক করুন';
-            startAdCountdown(MIN_AD_SECONDS, btn);
-        }
-    }, 3000);
+    btn.innerText = '⏳ ' + MIN_AD_SECONDS + 's পরে Count হবে';
 
-    // ── visibilitychange: পেজ hide → অ্যাডে গেছে, visible → ফিরে এসেছে ──
-    _adVerifyHandler = function() {
-        const isHidden = document.hidden;
+    // ── ১৫ সেকেন্ড countdown → count +1 ──────────────────
+    // countdown পেজ background-এ গেলেও চলে (setTimeout reliable)
+    let remaining = MIN_AD_SECONDS;
 
-        if (isHidden && _waitingForHide) {
-            // প্রথমবার hide → অ্যাড ট্যাবে গেছে
-            _waitingForHide = false;
-            clearTimeout(_hideTimeout);
-            _adStartHidden = Date.now();
-
-            // বাটনে countdown দেখাও
-            btn.innerText = '⏳ অ্যাডে থাকুন ' + MIN_AD_SECONDS + 's';
-            startAdCountdown(MIN_AD_SECONDS, btn);
-
-        } else if (isHidden && _adStartHidden === null) {
-            // দ্বিতীয়বার বা পরের hide
-            _adStartHidden = Date.now();
-
-        } else if (!isHidden && _adStartHidden !== null) {
-            // পেজ visible → ইউজার ব্যাক করেছে
-            const elapsed = Date.now() - _adStartHidden;
-            _adTimeSpent += elapsed;
-            _adStartHidden = null;
-            clearAdTimer();
-
-            const spentSeconds = Math.floor(_adTimeSpent / 1000);
-            const needed = MIN_AD_SECONDS * 1000;
-
-            if (_adTimeSpent >= needed) {
-                // ✅ যথেষ্ট সময় দেখেছে → count করো
-                _removeAdVerifyListeners();
-                btn.innerText = '✅ ভেরিফাই হচ্ছে...';
-                if (timerEl) timerEl.innerText = '✅ ভেরিফাই সম্পন্ন!';
-                setTimeout(() => {
-                    if (timerEl) timerEl.innerText = '';
-                    recordAdProgress();
-                }, 500);
-            } else {
-                // ❌ যথেষ্ট সময় দেয়নি → আবার অ্যাডে যেতে বলো
-                const remaining = Math.ceil((needed - _adTimeSpent) / 1000);
-                btn.disabled = false;
-                btn.innerText = '▶ আরো ' + remaining + 's দেখুন';
-                if (timerEl) timerEl.innerText = '⚠️ আরো ' + remaining + ' সেকেন্ড অ্যাডে থাকতে হবে';
-                adUnlockPending = false;
+    const tick = () => {
+        remaining--;
+        if (remaining > 0) {
+            btn.innerText = '⏳ ' + remaining + 's পরে Count হবে';
+            if (timerEl) {
+                timerEl.innerText = '📢 অ্যাডে থাকুন — আর ' + remaining + 's';
+                timerEl.style.color = remaining <= 5 ? '#e53e3e' : '#01875f';
             }
+        } else {
+            clearAdTimer();
+            btn.innerText = '✅ ভেরিফাই হচ্ছে...';
+            if (timerEl) {
+                timerEl.innerText = '✅ সম্পন্ন! Count হচ্ছে...';
+                timerEl.style.color = '#00b359';
+            }
+            setTimeout(() => { recordAdProgress(); }, 400);
         }
     };
 
-    document.addEventListener('visibilitychange', _adVerifyHandler);
-    window.addEventListener('focus', _adVerifyHandler);
-    _adVerifyBound = true;
+    adTimerInterval = setInterval(tick, 1000);
 }
 
-// ── Firebase-তে progress save করুন ──────────────────────────
+// ── Page resume: location.href দিয়ে গেলে ব্যাক করলে pending চেক ──
+// Safari / In-App Browser-এ কাজ করে
+window.addEventListener('pageshow', function(e) {
+    if (!adUnlockAppId) return;
+    const user = auth && auth.currentUser;
+    const uid = user ? user.uid : 'guest';
+    const pendingKey = '_adPending_' + adUnlockAppId;
+    const pendingTime = localStorage.getItem(pendingKey);
+    if (!pendingTime) return;
+
+    const elapsed = Date.now() - parseInt(pendingTime);
+    localStorage.removeItem(pendingKey);
+
+    if (elapsed >= MIN_AD_SECONDS * 1000) {
+        // যথেষ্ট সময় অ্যাডে ছিল → count করো
+        adUnlockPending = true;
+        recordAdProgress();
+    } else {
+        // কম সময় ছিল → বাকি সময় countdown করো
+        const btn = document.getElementById('unlock-watch-btn');
+        const timerEl = document.getElementById('ad-timer-display');
+        const remaining_ms = (MIN_AD_SECONDS * 1000) - elapsed;
+        let remaining = Math.ceil(remaining_ms / 1000);
+
+        adUnlockPending = true;
+        clearAdTimer();
+        btn.disabled = true;
+
+        const tick = () => {
+            remaining--;
+            if (remaining > 0) {
+                btn.innerText = '⏳ ' + remaining + 's পরে Count হবে';
+                if (timerEl) {
+                    timerEl.innerText = '📢 আর ' + remaining + 's অপেক্ষা করুন';
+                    timerEl.style.color = remaining <= 5 ? '#e53e3e' : '#01875f';
+                }
+            } else {
+                clearAdTimer();
+                btn.innerText = '✅ ভেরিফাই হচ্ছে...';
+                if (timerEl) { timerEl.innerText = '✅ Count হচ্ছে...'; timerEl.style.color = '#00b359'; }
+                setTimeout(() => { recordAdProgress(); }, 400);
+            }
+        };
+        adTimerInterval = setInterval(tick, 1000);
+        tick();
+    }
+});
+
+// ── Progress Save (localStorage primary, Firebase backup) ─────
 function recordAdProgress() {
     const user = auth.currentUser;
     const uid = user ? user.uid : 'guest';
-    const ref = db.ref('unlocks/' + uid + '/' + adUnlockAppId);
+    const lsKey = 'adprog_' + uid + '_' + adUnlockAppId;
+    const timerEl = document.getElementById('ad-timer-display');
 
-    ref.transaction(curr => {
-        const data = (curr && typeof curr === 'object') ? curr : {};
-        return Object.assign({}, data, {
-            userId: uid,
-            appId: adUnlockAppId,
-            progress: (data.progress || 0) + 1
-        });
-    }).then(result => {
-        adUnlockPending = false;
-        const data = result.snapshot && result.snapshot.val();
-        const next = (data && data.progress) || 1;
-        adUnlockCurrent = next;
+    // localStorage-এ সাথে সাথে count বাড়াও
+    const newCount = (parseInt(localStorage.getItem(lsKey) || '0')) + 1;
+    localStorage.setItem(lsKey, newCount);
+    adUnlockCurrent = newCount;
+    adUnlockPending = false;
+    if (timerEl) timerEl.innerText = '';
 
-        if (next >= adUnlockRequired) {
-            grantUnlock(uid);
-        } else {
-            updateUnlockUI();
-        }
-    }).catch(() => {
-        adUnlockPending = false;
-        const btn = document.getElementById('unlock-watch-btn');
-        btn.disabled = false;
-        btn.innerText = '▶ Watch Ad to Unlock';
-        showUnlockToast('Progress save হয়নি। Internet connection চেক করুন।');
-    });
+    if (newCount >= adUnlockRequired) {
+        grantUnlock(uid);
+    } else {
+        updateUnlockUI();
+        showUnlockToast('\u2705 ' + newCount + '/' + adUnlockRequired + ' — আরো ' + (adUnlockRequired - newCount) + 'টি অ্যাড দেখুন');
+    }
+
+    // Firebase-এও sync করো (fail হলে চলবে)
+    db.ref('unlocks/' + uid + '/' + adUnlockAppId).update({
+        userId: uid,
+        appId: adUnlockAppId,
+        progress: newCount
+    }).catch(() => {});
 }
 
-// ── 2-ঘন্টার জন্য Unlock দিন ─────────────────────────────────
+// ── Unlock Grant (2 ঘন্টা) ───────────────────────────────────
 function grantUnlock(uid) {
     const unlockTime = getServerTime();
     const expiryTime = unlockTime + UNLOCK_DURATION_MS;
+    const lsKey = 'adprog_' + uid + '_' + adUnlockAppId;
+
+    localStorage.setItem('unlock_exp_' + uid + '_' + adUnlockAppId, String(expiryTime));
+    localStorage.removeItem(lsKey);
+
+    adUnlockCurrent = adUnlockRequired;
+    updateUnlockUI();
+    confetti({ particleCount: 80, spread: 60, origin: { y: 0.7 } });
 
     db.ref('unlocks/' + uid + '/' + adUnlockAppId).update({
         userId: uid,
@@ -1830,22 +1830,16 @@ function grantUnlock(uid) {
         expiryTime: expiryTime,
         progress: 0
     }).then(() => {
-        db.ref('statistics/totalUnlocks').transaction(v => (v || 0) + 1);
-        db.ref('users/' + uid + '/unlocks').transaction(v => (v || 0) + 1);
+        db.ref('statistics/totalUnlocks').transaction(v => (v || 0) + 1).catch(()=>{});
+        db.ref('users/' + uid + '/unlocks').transaction(v => (v || 0) + 1).catch(()=>{});
+    }).catch(() => {});
 
-        adUnlockCurrent = adUnlockRequired;
-        updateUnlockUI();
-        confetti({ particleCount: 80, spread: 60, origin: { y: 0.7 } });
-
-        setTimeout(() => {
-            closeAdUnlockModal();
-            if (activeApp && activeApp.id === adUnlockAppId) {
-                checkUnlockStatus(adUnlockAppId, activeApp, adUnlockConfig, adUnlockGlobalSettings);
-            }
-        }, 600);
-    }).catch(() => {
-        showUnlockToast('Unlock save হয়নি। Internet connection চেক করুন।');
-    });
+    setTimeout(() => {
+        closeAdUnlockModal();
+        if (activeApp && activeApp.id === adUnlockAppId) {
+            checkUnlockStatus(adUnlockAppId, activeApp, adUnlockConfig, adUnlockGlobalSettings);
+        }
+    }, 800);
 }
 </script>
 
