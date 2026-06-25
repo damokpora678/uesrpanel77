@@ -671,6 +671,7 @@ let reelsData = [], pwaInstallPrompt = null, smartNotifTimer = null, fakeActivit
 let telegramJoined = false, previewPlayed = {}, sceneCurrentPart = {}, spinLocked = false, pendingEpCallback = null;
 let epAdCount = 0, currentEpId = null;
 let dailyAdTotal = 0;
+let appUnlockTimer = null, appUnlockSecondsLeft = 0, appUnlockAdStarted = false;
 const VIP_PLANS = [{ days:7, label:'7 Days', price:200, currency:'BDT' },{ days:15, label:'15 Days', price:400, currency:'BDT' },{ days:30, label:'30 Days', price:600, currency:'BDT', badge:'🔥 Best Value' }];
 let vipSelectedPlan = VIP_PLANS[0], vipGeneratedKey = '', vipActiveTab = 'bkash';
 let paymentSettings = { bkash:'01798090504', nagad:'01816626889', binance:'' };
@@ -705,7 +706,7 @@ function init() {
   loadAdsConfig();
   loadBanners();
   loadCategories();
-  loadUnlockSettings().then(() => startFakeActivity());
+  loadUnlockSettings().then(() => { startFakeActivity(); checkAppUnlockedFirebase(); });
   loadFeatureSettings().then(() => loadReels());
   loadMovies();
 
@@ -999,6 +1000,15 @@ function renderWatchSection(movie) {
     return;
   }
 
+  if (unlockSettings.appUnlockEnabled) {
+    if (isAppUnlocked()) {
+      ws.innerHTML = `<div style="text-align:center;"><div style="font-size:.8rem;color:#10b981;font-weight:600;margin-bottom:14px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.2);padding:8px 16px;border-radius:30px;display:inline-block;">🔓 Unlocked — Enjoy Streaming</div><br><button class="btn-watch-now" onclick="watchNow()" style="width:100%;padding:13px;">▶ Watch Now!</button></div>`;
+      return;
+    }
+    renderAppUnlockGate(movie);
+    return;
+  }
+
   const tgJoined = telegramJoined || sessionStorage.getItem('tg_joined')==='1';
   if (unlockSettings.telegramGateEnabled && !tgJoined) { renderTelegramGate(movie); return; }
   if (unlockSettings.previewEnabled && !previewPlayed[movie.id]) { renderPreviewFlow(movie); return; }
@@ -1107,6 +1117,131 @@ function getUserId() {
   return uid;
 }
 
+// ─── WHOLE APP UNLOCK (AD GATE) — embedded inside video unlock section ───
+function isAppUnlocked() {
+  const until = Number(localStorage.getItem('cv_app_unlock_until')) || 0;
+  return until > Date.now();
+}
+
+async function checkAppUnlockedFirebase() {
+  try {
+    const uid  = getUserId();
+    const snap = await getDoc(doc(db, 'appUnlocks', uid));
+    if (snap.exists() && snap.data().unlockUntil) {
+      const until = snap.data().unlockUntil;
+      if (until > Date.now()) localStorage.setItem('cv_app_unlock_until', until);
+    }
+  } catch(e) { console.warn('appUnlock check:', e.message); }
+  return isAppUnlocked();
+}
+
+function getAppUnlockProgress() {
+  return parseInt(localStorage.getItem('cv_app_unlock_progress') || '0');
+}
+function saveAppUnlockProgress(n) {
+  localStorage.setItem('cv_app_unlock_progress', String(n));
+}
+
+function renderAppUnlockGate(movie) {
+  const ws        = document.getElementById('watchSection');
+  const totalSecs = parseInt(unlockSettings.appUnlockAdSeconds) || 15;
+  const reqAds    = parseInt(unlockSettings.appUnlockAdCount) || 1;
+  const hours     = parseFloat(unlockSettings.appUnlockDurationHours) || 2;
+  const watched   = Math.min(getAppUnlockProgress(), reqAds);
+  const started   = appUnlockAdStarted;
+  const secsLeft  = started ? appUnlockSecondsLeft : totalSecs;
+  const pct       = started ? Math.min(((totalSecs-secsLeft)/totalSecs)*100,100) : Math.min((watched/reqAds)*100,100);
+  const btnLabel  = started ? `⏳ Wait ${secsLeft}s...` : (watched===0 ? `📢 Watch Ad (0/${reqAds})` : `📢 Continue Ads (${watched}/${reqAds})`);
+  ws.innerHTML = `
+    <div style="background:rgba(14,165,233,0.06);border:1.5px solid rgba(14,165,233,0.22);border-radius:18px;padding:24px 20px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:18px;">
+        <div style="font-size:2rem;">🔒</div>
+        <div><div style="font-size:1rem;font-weight:700;">Watch Ads to Unlock Free</div><div style="font-size:.75rem;color:var(--text3);margin-top:3px;">Watch ${reqAds} short ad${reqAds>1?'s':''} to unlock ALL videos for ${hours}h</div></div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;font-size:.72rem;color:var(--text3);margin-bottom:7px;"><span>Ad Progress</span><span id="appGateProgressLabel" style="font-weight:600;color:var(--primary);">${started?secsLeft+'s left':watched+'/'+reqAds+' watched'}</span></div>
+        <div style="height:8px;background:rgba(255,255,255,0.07);border-radius:10px;overflow:hidden;"><div id="appGateProgressBar" style="height:100%;border-radius:10px;background:linear-gradient(90deg,var(--primary),var(--accent2));width:${pct}%;transition:.6s;"></div></div>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:18px;">
+        ${Array.from({length:reqAds},(_,i)=>`<div style="width:26px;height:26px;border-radius:50%;font-size:.62rem;font-weight:700;display:flex;align-items:center;justify-content:center;background:${i<watched?'linear-gradient(135deg,var(--primary),var(--accent2))':'rgba(255,255,255,0.06)'};border:1px solid ${i<watched?'transparent':'var(--border)'};color:${i<watched?'#fff':'var(--text3)'};">${i<watched?'✓':i+1}</div>`).join('')}
+      </div>
+      <button class="btn-watch-ad" id="appGateAdBtn" onclick="watchAppUnlockAd('${movie.id}')" style="width:100%;font-size:.95rem;padding:13px;" ${started?'disabled':''}>${btnLabel}</button>
+      <div id="appGateCooldownMsg" style="margin-top:10px;text-align:center;"></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:12px 16px;background:rgba(245,158,11,0.04);border:1px solid rgba(245,158,11,0.18);border-radius:12px;cursor:pointer;" onclick="closeModal();setTimeout(openVipModal,200);">
+      <span>👑</span><span style="font-size:.82rem;color:var(--text2);">Skip all ads with</span>
+      <span style="font-size:.88rem;font-weight:700;background:linear-gradient(135deg,#f59e0b,#ef4444);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">VIP Subscription</span>
+      <span style="font-size:.75rem;color:var(--accent);font-weight:600;">→ from 200৳</span>
+    </div>`;
+}
+
+window.watchAppUnlockAd = function(movieId) {
+  if (appUnlockAdStarted) return;
+  const url = unlockSettings.appUnlockSmartlink || '';
+  if (url) window.open(url, '_blank'); else showToast('warn','⚠️','Ad URL not configured.');
+  appUnlockAdStarted   = true;
+  appUnlockSecondsLeft = parseInt(unlockSettings.appUnlockAdSeconds) || 15;
+  const btn = document.getElementById('appGateAdBtn');
+  if (btn) btn.disabled = true;
+  startAppUnlockCountdown(movieId);
+};
+
+function startAppUnlockCountdown(movieId) {
+  clearInterval(appUnlockTimer);
+  const totalSecs = parseInt(unlockSettings.appUnlockAdSeconds) || 15;
+  appUnlockTimer = setInterval(() => {
+    if (document.hidden) return;
+    const btn   = document.getElementById('appGateAdBtn');
+    const label = document.getElementById('appGateProgressLabel');
+    const bar   = document.getElementById('appGateProgressBar');
+    const cdMsg = document.getElementById('appGateCooldownMsg');
+    if (btn)   btn.textContent   = `⏳ Wait ${appUnlockSecondsLeft}s...`;
+    if (label) label.textContent = `${appUnlockSecondsLeft}s left`;
+    if (bar)   bar.style.width   = `${Math.min(((totalSecs-appUnlockSecondsLeft)/totalSecs)*100,100)}%`;
+    if (cdMsg) cdMsg.innerHTML   = `<span style="color:var(--accent);">⏱ Stay on ad tab: <strong>${appUnlockSecondsLeft}s</strong></span>`;
+    appUnlockSecondsLeft--;
+    if (appUnlockSecondsLeft < 0) {
+      clearInterval(appUnlockTimer);
+      registerAppUnlockAdWatched(movieId);
+    }
+  }, 1000);
+}
+
+function registerAppUnlockAdWatched(movieId) {
+  appUnlockAdStarted = false;
+  const reqAds  = parseInt(unlockSettings.appUnlockAdCount) || 1;
+  const watched = Math.min(getAppUnlockProgress() + 1, reqAds);
+  saveAppUnlockProgress(watched);
+  incrementDailyAdCount();
+  updateDoc(doc(db,'analytics','main'), { totalClicks: increment(1) }).catch(()=>{});
+  if (watched >= reqAds) {
+    finishAppUnlock();
+  } else {
+    showToast('info','✅',`Ad ${watched}/${reqAds} counted! Keep going.`);
+    if (currentMovie) renderAppUnlockGate(currentMovie);
+  }
+}
+
+async function finishAppUnlock() {
+  const hours       = parseFloat(unlockSettings.appUnlockDurationHours) || 2;
+  const unlockUntil = Date.now() + hours * 60 * 60 * 1000;
+  localStorage.setItem('cv_app_unlock_until', unlockUntil);
+  saveAppUnlockProgress(0);
+  appUnlockAdStarted = false;
+  try {
+    const uid = getUserId();
+    await setDoc(doc(db, 'appUnlocks', uid), { unlockUntil, ts: serverTimestamp() });
+  } catch(e) { console.warn('appUnlock save:', e.message); }
+  showToast('success','🎉',`Unlocked! All videos free for ${hours}h.`);
+  if (pendingEpCallback) {
+    const cb = pendingEpCallback;
+    pendingEpCallback = null;
+    setTimeout(() => cb(), 400);
+  } else if (currentMovie) {
+    renderWatchSection(currentMovie);
+  }
+}
+
 async function checkEpUnlockedFirebase(movieId, epId) {
   try {
     const uid = getUserId();
@@ -1145,6 +1280,17 @@ window.selectEpisode = async function(btn) {
   // VIP / free / ads disabled → play directly
   if (isVIP || mode === 'free' || !adsConfig.adsEnabled) {
     playEpisode(ep);
+    return;
+  }
+
+  // Whole-app ad unlock enabled in admin → governs all video/episode unlocking
+  if (unlockSettings.appUnlockEnabled) {
+    if (isAppUnlocked()) { playEpisode(ep); return; }
+    epAdCount = 0;
+    pendingEpCallback = () => playEpisode(ep);
+    const gateWs = document.getElementById('watchSection');
+    gateWs.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    renderAppUnlockGate(currentMovie);
     return;
   }
 
@@ -1197,79 +1343,6 @@ function renderEpisodeUnlockSection(ep, movieId, epId) {
     </div>`;
 }
 
-// ─── PLAY STORE STYLE ACTIVE AD WATCHING VERIFICATION (admin-configurable) ───
-function formatAdWatchLabel(tpl, fallback, s) {
-  const t = (tpl && String(tpl).trim()) ? tpl : fallback;
-  return t.replace('{s}', s);
-}
-
-function startAdWatchVerification(opts) {
-  const enabled = unlockSettings.activeWatchEnabled !== false;
-  const requiredSecs = opts.requiredSeconds || parseInt(unlockSettings.activeWatchSeconds) || 15;
-  const requiredMs = requiredSecs * 1000;
-  const activeTpl = unlockSettings.activeWatchLabel || '⏱ Verifying: {s}s — stay on this screen';
-  const pausedTpl = unlockSettings.activeWatchPausedLabel || '⏸ Paused — come back to this tab ({s}s left)';
-
-  let elapsedMs = 0;
-  let lastTs = (!enabled || document.visibilityState === 'visible') ? Date.now() : null;
-  let finished = false;
-  let pollId = null;
-
-  function cleanup() {
-    document.removeEventListener('visibilitychange', onVisChange);
-    if (pollId) { clearInterval(pollId); pollId = null; }
-  }
-
-  function render() {
-    const btn = opts.getBtn();
-    const cdEl = opts.getCdEl();
-    if (!btn && !cdEl) { cleanup(); return; }
-    const remainSec = Math.max(0, Math.ceil((requiredMs - elapsedMs) / 1000));
-    const isPaused = enabled && document.visibilityState !== 'visible';
-    if (cdEl) {
-      const label = isPaused
-        ? formatAdWatchLabel(pausedTpl, '⏸ Paused — come back to this tab ({s}s left)', remainSec)
-        : formatAdWatchLabel(activeTpl, '⏱ Verifying: {s}s — stay on this screen', remainSec);
-      cdEl.innerHTML = `<span style="color:${isPaused ? '#ef4444' : 'var(--accent)'};">${label}</span>`;
-    }
-    if (btn) btn.textContent = isPaused ? `⏸ Paused (${remainSec}s left)` : `⏳ Wait ${remainSec}s...`;
-  }
-
-  function tick() {
-    if (finished) return;
-    if (!enabled || document.visibilityState === 'visible') {
-      const now = Date.now();
-      if (lastTs === null) lastTs = now;
-      elapsedMs += now - lastTs;
-      lastTs = now;
-    } else {
-      lastTs = null;
-    }
-    if (elapsedMs >= requiredMs) {
-      finished = true;
-      cleanup();
-      opts.onComplete();
-      return;
-    }
-    render();
-  }
-
-  function onVisChange() {
-    if (!enabled) return;
-    if (document.visibilityState === 'visible') {
-      lastTs = Date.now();
-    } else if (lastTs !== null) {
-      elapsedMs += Date.now() - lastTs;
-      lastTs = null;
-    }
-    render();
-  }
-
-  if (enabled) document.addEventListener('visibilitychange', onVisChange);
-  pollId = setInterval(tick, 250);
-  render();
-}
-
 window.watchEpisodeAd = function(movieId, epId) {
   if (adCooldown) { showToast('warn','⏳','Please wait for cooldown.'); return; }
   const btn  = document.getElementById('epAdBtn');
@@ -1278,12 +1351,16 @@ window.watchEpisodeAd = function(movieId, epId) {
   const adUrl = resolveAdUrl(epAdCount);
   if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured.');
   adCooldown = true;
-  const requiredSecs = parseInt(unlockSettings.countdownEnabled !== false ? (unlockSettings.countdownSecs || 15) : 15);
-  startAdWatchVerification({
-    requiredSeconds: requiredSecs,
-    getBtn: () => document.getElementById('epAdBtn'),
-    getCdEl: () => document.getElementById('epCooldownMsg'),
-    onComplete: () => {
+  let secs = parseInt(unlockSettings.countdownEnabled !== false ? (unlockSettings.countdownSecs || 15) : 15);
+  const tick = () => {
+    if (cdEl) cdEl.innerHTML = `<span style="color:var(--accent);">⏱ Counting down: <strong>${secs}s</strong> — keep the ad tab open</span>`;
+    if (btn)  btn.textContent = `⏳ Wait ${secs}s...`;
+  };
+  tick();
+  const timer = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(timer);
       adCooldown = false;
       epAdCount++;
       incrementDailyAdCount();
@@ -1292,11 +1369,12 @@ window.watchEpisodeAd = function(movieId, epId) {
       const unlocked = epAdCount >= req;
       showToast(unlocked ? 'success' : 'info', unlocked ? '🎉' : '✅',
         unlocked ? `EP ${selectedEpisode?.ep||''} unlocked! Press Play.` : `Ad ${epAdCount}/${req} counted for this episode!`);
+      // Re-render the episode unlock section with updated progress
       if (currentMovie && currentEpId === epId) {
         renderEpisodeUnlockSection(selectedEpisode, movieId, epId);
       }
-    }
-  });
+    } else { tick(); }
+  }, 1000);
 };
 
 window.finishEpisodeUnlock = async function(movieId, epId) {
@@ -1361,13 +1439,14 @@ window.watchAd = function(movieId) {
   const adUrl = resolveAdUrl(adCount);
   if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
   adCooldown = true;
-  const requiredSecs = parseInt(unlockSettings.countdownEnabled!==false ? (unlockSettings.countdownSecs||15) : 15);
-  startAdWatchVerification({
-    requiredSeconds: requiredSecs,
-    getBtn: () => document.getElementById('watchAdBtn'),
-    getCdEl: () => document.getElementById('adCooldownMsg'),
-    onComplete: () => {
-      adCooldown = false; adCount++;
+  let secs = parseInt(unlockSettings.countdownEnabled!==false ? (unlockSettings.countdownSecs||15) : 15);
+  const cdMsg = document.getElementById('adCooldownMsg');
+  const updateCd = () => { if(cdMsg) cdMsg.innerHTML=`<span style="color:var(--accent);">⏱ Counting down: <strong>${secs}s</strong> — keep the ad tab open</span>`; if(btn) btn.textContent=`⏳ Wait ${secs}s...`; };
+  updateCd();
+  const timer = setInterval(() => {
+    secs--;
+    if (secs <= 0) {
+      clearInterval(timer); adCooldown = false; adCount++;
       saveProgress(movieId, adCount); incrementDailyAdCount();
       updateDoc(doc(db,'analytics','main'), { totalClicks: increment(1) }).catch(()=>{});
       const unlocked = adCount >= requiredAds;
@@ -1383,8 +1462,8 @@ window.watchAd = function(movieId) {
           setTimeout(() => playEpisode(ep), 400);
         }
       }
-    }
-  });
+    } else { updateCd(); }
+  }, 1000);
 };
 
 window.watchNow = function() {
@@ -1483,29 +1562,10 @@ window.watchStepAd = function(movieId) {
   if (adCooldown) { showToast('warn','⏳','Please wait for cooldown.'); return; }
   const btn=document.getElementById('multiStepAdBtn'); if(btn){btn.disabled=true;btn.textContent='⏳ Opening Ad...';}
   const adUrl=resolveAdUrl(adCount); if(adUrl) window.open(adUrl,'_blank');
-  adCooldown=true;
-  const requiredSecs = parseInt(unlockSettings.countdownEnabled?(unlockSettings.countdownSecs||15):15);
-  startAdWatchVerification({
-    requiredSeconds: requiredSecs,
-    getBtn: () => document.getElementById('multiStepAdBtn'),
-    getCdEl: () => document.getElementById('multiStepCd'),
-    onComplete: () => {
-      adCooldown=false; adCount++; incrementDailyAdCount();
-      updateDoc(doc(db,'analytics','main'),{totalClicks:increment(1)}).catch(()=>{});
-      const sp=getStepProgress(movieId),ts=parseInt(unlockSettings.totalSteps||3),aps=parseInt(unlockSettings.adsPerStep||2);
-      sp.adsInStep++;
-      if(sp.adsInStep>=aps){sp.adsInStep=0;sp.completedSteps++;}
-      saveStepProgress(movieId,sp);
-      const stepsDone=sp.completedSteps>=ts;
-      if(stepsDone)showToast('success','🎉','All steps complete! Movie unlocked!');
-      else showToast('info','✅',`Step progress saved! (${sp.completedSteps} of ${ts} done)`);
-      renderWatchSection(currentMovie);
-      if(stepsDone&&(window.selectedEpisode||selectedEpisode)){
-        const ep=window.selectedEpisode||selectedEpisode;
-        setTimeout(()=>playEpisode(ep),400);
-      }
-    }
-  });
+  adCooldown=true; let secs=parseInt(unlockSettings.countdownEnabled?(unlockSettings.countdownSecs||15):15);
+  const cdEl=document.getElementById('multiStepCd');
+  const tick=()=>{if(cdEl)cdEl.innerHTML=`<span style="color:var(--accent);font-size:.78rem;">⏱ Wait <strong>${secs}s</strong></span>`;if(btn)btn.textContent=`⏳ Wait ${secs}s...`;};tick();
+  const t=setInterval(()=>{secs--;if(secs<=0){clearInterval(t);adCooldown=false;adCount++;incrementDailyAdCount();updateDoc(doc(db,'analytics','main'),{totalClicks:increment(1)}).catch(()=>{});const sp=getStepProgress(movieId),ts=parseInt(unlockSettings.totalSteps||3),aps=parseInt(unlockSettings.adsPerStep||2);sp.adsInStep++;if(sp.adsInStep>=aps){sp.adsInStep=0;sp.completedSteps++;}saveStepProgress(movieId,sp);const stepsDone=sp.completedSteps>=ts;if(stepsDone)showToast('success','🎉','All steps complete! Movie unlocked!');else showToast('info','✅',`Step progress saved! (${sp.completedSteps} of ${ts} done)`);renderWatchSection(currentMovie);if(stepsDone&&(window.selectedEpisode||selectedEpisode)){const ep=window.selectedEpisode||selectedEpisode;setTimeout(()=>playEpisode(ep),400);}}else{secs--;tick();}},1000);
 };
 
 // ─── SPIN WHEEL ───
@@ -1561,35 +1621,7 @@ window.renderSceneUnlock = function(movie) {
 };
 function renderScenePartBody(movie,part,totalParts,unlockedParts){const el=document.getElementById('scenePartBody');if(!el)return;const partUnlocked=part<unlockedParts,req=parseInt(requiredAds),partKey='scene_ads_'+movie.id+'_part'+part,partAds=parseInt(localStorage.getItem(partKey)||'0'),pDone=partAds>=req;if(partUnlocked||pDone){el.innerHTML=`<div style="text-align:center;padding:12px 0;"><div style="font-size:.85rem;color:#10b981;margin-bottom:12px;">✅ Part ${part+1} unlocked!</div><button class="btn-watch-now" onclick="watchNow()" style="width:100%;padding:12px;">▶ Watch Part ${part+1}</button>${part+1<totalParts?`<div style="font-size:.75rem;color:var(--text3);margin-top:10px;">Unlock Part ${part+2} to continue the story →</div>`:''}</div>`;if(!partUnlocked&&pDone)setSceneProgress(movie.id,part+1);}else{const pct=Math.round((partAds/req)*100);el.innerHTML=`<div style="font-size:.8rem;color:var(--text2);margin-bottom:12px;">Part ${part+1} requires watching <strong style="color:var(--text);">${req} ads</strong> to unlock.</div><div style="height:7px;background:rgba(255,255,255,.07);border-radius:10px;overflow:hidden;margin-bottom:12px;"><div style="height:100%;background:linear-gradient(90deg,var(--primary),var(--accent2));width:${pct}%;transition:.5s;"></div></div><button class="btn-watch-ad" id="sceneAdBtn" onclick="watchSceneAd('${movie.id}',${part})" style="width:100%;padding:12px;">📢 Unlock Part ${part+1} (${partAds}/${req} ads)</button><div id="sceneCd" style="text-align:center;margin-top:8px;"></div>`;}}
 window.switchScenePart = function(movieId,part,totalParts){sceneCurrentPart[movieId]=part;document.querySelectorAll('.scene-tab-btn').forEach((btn,i)=>{btn.classList.remove('active');if(i===part)btn.classList.add('active');});renderScenePartBody(currentMovie,part,totalParts,getSceneProgress(movieId));};
-window.watchSceneAd = function(movieId,part){
-  if(adCooldown){showToast('warn','⏳','Please wait for cooldown.');return;}
-  const btn=document.getElementById('sceneAdBtn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Opening Ad...';}
-  const adUrl=resolveAdUrl(adCount);
-  if(adUrl)window.open(adUrl,'_blank');
-  adCooldown=true;
-  const requiredSecs=parseInt(unlockSettings.countdownSecs||15);
-  startAdWatchVerification({
-    requiredSeconds: requiredSecs,
-    getBtn: () => document.getElementById('sceneAdBtn'),
-    getCdEl: () => document.getElementById('sceneCd'),
-    onComplete: () => {
-      adCooldown=false;
-      const pk='scene_ads_'+movieId+'_part'+part,cur=parseInt(localStorage.getItem(pk)||'0')+1;
-      localStorage.setItem(pk,cur);
-      incrementDailyAdCount();
-      updateDoc(doc(db,'analytics','main'),{totalClicks:increment(1)}).catch(()=>{});
-      adCount++;
-      if(cur>=requiredAds){
-        setSceneProgress(movieId,part+1);
-        showToast('success','🎉',`Part ${part+1} unlocked! Enjoy watching!`);
-      } else {
-        showToast('info','✅',`Ad ${cur}/${requiredAds} counted for Part ${part+1}`);
-      }
-      renderWatchSection(currentMovie);
-    }
-  });
-};
+window.watchSceneAd = function(movieId,part){if(adCooldown){showToast('warn','⏳','Please wait for cooldown.');return;}const btn=document.getElementById('sceneAdBtn');if(btn){btn.disabled=true;btn.textContent='⏳ Opening Ad...';}const adUrl=resolveAdUrl(adCount);if(adUrl)window.open(adUrl,'_blank');adCooldown=true;let secs=parseInt(unlockSettings.countdownSecs||15);const cdEl=document.getElementById('sceneCd');const tick=()=>{if(cdEl)cdEl.innerHTML=`<span style="color:var(--accent);font-size:.78rem;">⏱ Wait <strong>${secs}s</strong></span>`;if(btn)btn.textContent=`⏳ Wait ${secs}s...`;};tick();const t=setInterval(()=>{secs--;if(secs<=0){clearInterval(t);adCooldown=false;const pk='scene_ads_'+movieId+'_part'+part,cur=parseInt(localStorage.getItem(pk)||'0')+1;localStorage.setItem(pk,cur);incrementDailyAdCount();updateDoc(doc(db,'analytics','main'),{totalClicks:increment(1)}).catch(()=>{});adCount++;if(cur>=requiredAds){setSceneProgress(movieId,part+1);showToast('success','🎉',`Part ${part+1} unlocked! Enjoy watching!`);}else{showToast('info','✅',`Ad ${cur}/${requiredAds} counted for Part ${part+1}`);}renderWatchSection(currentMovie);}else{secs--;tick();}},1000);};
 
 // ─── VIP SYSTEM ───
 async function checkVIPStatus() {
