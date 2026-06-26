@@ -1198,10 +1198,10 @@ function renderEpisodeUnlockSection(ep, movieId, epId) {
 }
 
 // ─── PLAY STORE STYLE ACTIVE AD WATCHING VERIFICATION (admin-configurable) ───
-// The timer accumulates ONLY while this tab is visible AND focused.
-// Switching tabs, minimizing, pressing Home, switching apps, or backgrounding
-// the browser all immediately pause it (document.visibilityState/visibilitychange
-// + window.focus/blur). Progress is preserved and resumes from where it left off.
+// The ad opens in its own tab. So the timer must run WHILE THE AD IS OPEN
+// (this site's tab is hidden/blurred in the background) and must PAUSE the
+// instant the user comes back to this site (visible/focused again).
+// Progress is preserved and resumes from where it left off, never restarts.
 function formatAdWatchLabel(tpl, fallback, s) {
   const t = (tpl && String(tpl).trim()) ? tpl : fallback;
   return t.replace('{s}', s);
@@ -1211,17 +1211,17 @@ function startAdWatchVerification(opts) {
   const enabled      = unlockSettings.activeWatchEnabled !== false;
   const requiredSecs = opts.requiredSeconds || parseInt(unlockSettings.activeWatchSeconds) || 15;
   const requiredMs   = requiredSecs * 1000;
-  const activeTpl     = unlockSettings.activeWatchLabel       || '⏱ Verifying: {s}s left — stay on this screen';
-  const pausedTpl     = unlockSettings.activeWatchPausedLabel || '⏸ Paused — come back to this tab ({s}s left)';
+  const activeTpl     = unlockSettings.activeWatchLabel       || '⏱ Verifying ad view: {s}s left — keep the ad open';
+  const pausedTpl     = unlockSettings.activeWatchPausedLabel || '⏸ Paused — reopen the ad to continue ({s}s left)';
 
   let elapsedMs = 0;
   let lastTs    = null;
   let finished  = false;
   let pollId    = null;
 
-  function isActiveNow() {
-    if (!enabled) return true;
-    return document.visibilityState === 'visible' && document.hasFocus();
+  function isAdOpenNow() {
+    if (!enabled) return true; // verification disabled by admin: behave like the old plain timer
+    return document.hidden || !document.hasFocus();
   }
 
   function cleanup() {
@@ -1236,34 +1236,30 @@ function startAdWatchVerification(opts) {
     const cdEl = opts.getCdEl();
     if (!btn && !cdEl) { cleanup(); return; }
     const remainSec = Math.max(0, Math.ceil((requiredMs - elapsedMs) / 1000));
-    const isPaused = enabled && !isActiveNow();
+    const isPaused = enabled && !isAdOpenNow();
     if (cdEl) {
       const label = isPaused
-        ? formatAdWatchLabel(pausedTpl, '⏸ Paused — come back to this tab ({s}s left)', remainSec)
-        : formatAdWatchLabel(activeTpl, '⏱ Verifying: {s}s left — stay on this screen', remainSec);
+        ? formatAdWatchLabel(pausedTpl, '⏸ Paused — reopen the ad to continue ({s}s left)', remainSec)
+        : formatAdWatchLabel(activeTpl, '⏱ Verifying ad view: {s}s left — keep the ad open', remainSec);
       cdEl.innerHTML = `<span style="color:${isPaused ? '#ef4444' : 'var(--accent)'};">${label}</span>`;
     }
     if (btn) btn.textContent = isPaused ? `⏸ Paused (${remainSec}s left)` : `⏳ Verifying ${remainSec}s...`;
   }
 
-  function pause(now) {
-    if (lastTs !== null) { elapsedMs += Math.max(0, now - lastTs); lastTs = null; }
-  }
-
-  function resume(now) {
-    if (isActiveNow()) lastTs = now;
-  }
-
-  function tick() {
-    if (finished) return;
-    const now = Date.now();
-    if (isActiveNow()) {
+  function sync(now) {
+    if (isAdOpenNow()) {
       if (lastTs === null) lastTs = now;
       elapsedMs += now - lastTs;
       lastTs = now;
     } else if (lastTs !== null) {
-      pause(now);
+      elapsedMs += Math.max(0, now - lastTs);
+      lastTs = null;
     }
+  }
+
+  function tick() {
+    if (finished) return;
+    sync(Date.now());
     if (elapsedMs >= requiredMs) {
       finished = true;
       cleanup();
@@ -1273,15 +1269,11 @@ function startAdWatchVerification(opts) {
     render();
   }
 
-  function onVisChange() {
-    const now = Date.now();
-    if (document.visibilityState !== 'visible') pause(now); else resume(now);
-    render();
-  }
-  function onBlur()  { pause(Date.now()); render(); }
-  function onFocus() { resume(Date.now()); render(); }
+  function onVisChange() { sync(Date.now()); render(); }
+  function onBlur()      { sync(Date.now()); render(); }
+  function onFocus()     { sync(Date.now()); render(); }
 
-  if (isActiveNow()) lastTs = Date.now();
+  if (isAdOpenNow()) lastTs = Date.now();
   document.addEventListener('visibilitychange', onVisChange);
   window.addEventListener('blur', onBlur);
   window.addEventListener('focus', onFocus);
