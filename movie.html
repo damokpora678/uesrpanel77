@@ -1282,11 +1282,12 @@ function startAdWatchVerification(opts) {
 }
 
 window.watchEpisodeAd = function(movieId, epId) {
-  if (adCooldown) { showToast('warn','⏳','Please wait for cooldown.'); return; }
-  const btn  = document.getElementById('epAdBtn');
-  const cdEl = document.getElementById('epCooldownMsg');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Opening Ad...'; }
   const adUrl = resolveAdUrl(epAdCount);
+  if (adCooldown) {
+    // Verification already running (likely paused) — re-clicking just reopens the ad.
+    if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured.');
+    return;
+  }
   if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured.');
   adCooldown = true;
   const requiredSecs = parseInt(unlockSettings.countdownEnabled !== false ? (unlockSettings.countdownSecs || 15) : 15);
@@ -1366,10 +1367,11 @@ function playEpisode(ep) {
 
 // ─── WATCH AD ───
 window.watchAd = function(movieId) {
-  if (adCooldown) { showToast('warn','⏳','Please wait for cooldown.'); return; }
-  const btn = document.getElementById('watchAdBtn');
-  if (btn) { btn.disabled=true; btn.textContent='⏳ Opening Ad...'; }
   const adUrl = resolveAdUrl(adCount);
+  if (adCooldown) {
+    if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
+    return;
+  }
   if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
   adCooldown = true;
   const requiredSecs = parseInt(unlockSettings.countdownEnabled!==false ? (unlockSettings.countdownSecs||15) : 15);
@@ -1491,9 +1493,9 @@ window.renderMultiStepUnlock = function(movie) {
 };
 
 window.watchStepAd = function(movieId) {
-  if (adCooldown) { showToast('warn','⏳','Please wait for cooldown.'); return; }
-  const btn=document.getElementById('multiStepAdBtn'); if(btn){btn.disabled=true;btn.textContent='⏳ Opening Ad...';}
-  const adUrl=resolveAdUrl(adCount); if(adUrl) window.open(adUrl,'_blank');
+  const adUrl=resolveAdUrl(adCount);
+  if (adCooldown) { if(adUrl) window.open(adUrl,'_blank'); return; }
+  if(adUrl) window.open(adUrl,'_blank');
   adCooldown=true;
   const requiredSecs = parseInt(unlockSettings.countdownEnabled?(unlockSettings.countdownSecs||15):15);
   startAdWatchVerification({
@@ -1573,10 +1575,8 @@ window.renderSceneUnlock = function(movie) {
 function renderScenePartBody(movie,part,totalParts,unlockedParts){const el=document.getElementById('scenePartBody');if(!el)return;const partUnlocked=part<unlockedParts,req=parseInt(requiredAds),partKey='scene_ads_'+movie.id+'_part'+part,partAds=parseInt(localStorage.getItem(partKey)||'0'),pDone=partAds>=req;if(partUnlocked||pDone){el.innerHTML=`<div style="text-align:center;padding:12px 0;"><div style="font-size:.85rem;color:#10b981;margin-bottom:12px;">✅ Part ${part+1} unlocked!</div><button class="btn-watch-now" onclick="watchNow()" style="width:100%;padding:12px;">▶ Watch Part ${part+1}</button>${part+1<totalParts?`<div style="font-size:.75rem;color:var(--text3);margin-top:10px;">Unlock Part ${part+2} to continue the story →</div>`:''}</div>`;if(!partUnlocked&&pDone)setSceneProgress(movie.id,part+1);}else{const pct=Math.round((partAds/req)*100);el.innerHTML=`<div style="font-size:.8rem;color:var(--text2);margin-bottom:12px;">Part ${part+1} requires watching <strong style="color:var(--text);">${req} ads</strong> to unlock.</div><div style="height:7px;background:rgba(255,255,255,.07);border-radius:10px;overflow:hidden;margin-bottom:12px;"><div style="height:100%;background:linear-gradient(90deg,var(--primary),var(--accent2));width:${pct}%;transition:.5s;"></div></div><button class="btn-watch-ad" id="sceneAdBtn" onclick="watchSceneAd('${movie.id}',${part})" style="width:100%;padding:12px;">📢 Unlock Part ${part+1} (${partAds}/${req} ads)</button><div id="sceneCd" style="text-align:center;margin-top:8px;"></div>`;}}
 window.switchScenePart = function(movieId,part,totalParts){sceneCurrentPart[movieId]=part;document.querySelectorAll('.scene-tab-btn').forEach((btn,i)=>{btn.classList.remove('active');if(i===part)btn.classList.add('active');});renderScenePartBody(currentMovie,part,totalParts,getSceneProgress(movieId));};
 window.watchSceneAd = function(movieId,part){
-  if(adCooldown){showToast('warn','⏳','Please wait for cooldown.');return;}
-  const btn=document.getElementById('sceneAdBtn');
-  if(btn){btn.disabled=true;btn.textContent='⏳ Opening Ad...';}
   const adUrl=resolveAdUrl(adCount);
+  if(adCooldown){ if(adUrl)window.open(adUrl,'_blank'); return; }
   if(adUrl)window.open(adUrl,'_blank');
   adCooldown=true;
   const requiredSecs=parseInt(unlockSettings.countdownSecs||15);
