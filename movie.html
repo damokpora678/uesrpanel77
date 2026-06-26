@@ -747,7 +747,39 @@ async function loadAdsConfig() {
     adsConfig = snap.data();
     requiredAds = parseInt(adsConfig.requiredAds) || 5;
     adMode = adsConfig.adMode || adsConfig.mode || 'adsterra';
+    preconnectAdDomains();
   } catch(e) { console.warn('Ads config:', e.message); }
+}
+
+function preconnectAdDomains() {
+  [adsConfig.adsterraLink, adsConfig.monetagLink].forEach(url => {
+    if (!url) return;
+    try {
+      const origin = new URL(url).origin;
+      ['preconnect','dns-prefetch'].forEach(rel => {
+        if (document.querySelector(`link[rel="${rel}"][href="${origin}"]`)) return;
+        const link = document.createElement('link');
+        link.rel = rel; link.href = origin; if (rel === 'preconnect') link.crossOrigin = 'anonymous';
+        document.head.appendChild(link);
+      });
+    } catch(e) {}
+  });
+}
+
+// Opens the ad URL as fast as possible: a synchronously-clicked anchor avoids
+// the extra popup-permission overhead some mobile browsers add to window.open(),
+// so the new tab starts loading the instant the button is tapped.
+function openAdFast(url) {
+  if (!url) return;
+  try {
+    const a = document.createElement('a');
+    a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) {
+    window.open(url, '_blank');
+  }
 }
 
 async function loadBanners() {
@@ -1285,14 +1317,12 @@ window.watchEpisodeAd = function(movieId, epId) {
   const adUrl = resolveAdUrl(epAdCount);
   if (adCooldown) {
     // Verification already running (likely paused) — re-clicking just reopens the ad.
-    if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured.');
+    if (adUrl) openAdFast(adUrl); else showToast('warn','⚠️','Ad URL not configured.');
     return;
   }
-  if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured.');
+  if (adUrl) openAdFast(adUrl); else showToast('warn','⚠️','Ad URL not configured.');
   adCooldown = true;
-  const requiredSecs = parseInt(unlockSettings.countdownEnabled !== false ? (unlockSettings.countdownSecs || 15) : 15);
   startAdWatchVerification({
-    requiredSeconds: requiredSecs,
     getBtn: () => document.getElementById('epAdBtn'),
     getCdEl: () => document.getElementById('epCooldownMsg'),
     onComplete: () => {
@@ -1369,14 +1399,12 @@ function playEpisode(ep) {
 window.watchAd = function(movieId) {
   const adUrl = resolveAdUrl(adCount);
   if (adCooldown) {
-    if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
+    if (adUrl) openAdFast(adUrl); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
     return;
   }
-  if (adUrl) window.open(adUrl, '_blank'); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
+  if (adUrl) openAdFast(adUrl); else showToast('warn','⚠️','Ad URL not configured. Contact admin.');
   adCooldown = true;
-  const requiredSecs = parseInt(unlockSettings.countdownEnabled!==false ? (unlockSettings.countdownSecs||15) : 15);
   startAdWatchVerification({
-    requiredSeconds: requiredSecs,
     getBtn: () => document.getElementById('watchAdBtn'),
     getCdEl: () => document.getElementById('adCooldownMsg'),
     onComplete: () => {
@@ -1494,12 +1522,10 @@ window.renderMultiStepUnlock = function(movie) {
 
 window.watchStepAd = function(movieId) {
   const adUrl=resolveAdUrl(adCount);
-  if (adCooldown) { if(adUrl) window.open(adUrl,'_blank'); return; }
-  if(adUrl) window.open(adUrl,'_blank');
+  if (adCooldown) { if(adUrl) openAdFast(adUrl); return; }
+  if(adUrl) openAdFast(adUrl);
   adCooldown=true;
-  const requiredSecs = parseInt(unlockSettings.countdownEnabled?(unlockSettings.countdownSecs||15):15);
   startAdWatchVerification({
-    requiredSeconds: requiredSecs,
     getBtn: () => document.getElementById('multiStepAdBtn'),
     getCdEl: () => document.getElementById('multiStepCd'),
     onComplete: () => {
@@ -1536,7 +1562,7 @@ window.renderSpinWheelUnlock = function(movie) {
 window.doSpin = function(movieId) {
   const btn=document.getElementById('spinBtn'),resultEl=document.getElementById('spinResult'),canvas=document.getElementById('spinCanvas');
   if(!canvas||spinLocked)return; spinLocked=true; if(btn)btn.disabled=true; if(resultEl)resultEl.textContent='🌀 Spinning...';
-  const adUrl=resolveAdUrl(adCount); if(adUrl) window.open(adUrl,'_blank');
+  const adUrl=resolveAdUrl(adCount); if(adUrl) openAdFast(adUrl);
   const dayKey='spins_'+getTodayKey(),done=parseInt(localStorage.getItem(dayKey)||'0')+1;localStorage.setItem(dayKey,done);incrementDailyAdCount();updateDoc(doc(db,'analytics','main'),{totalClicks:increment(1)}).catch(()=>{});
   const segCount=WHEEL_SEGMENTS.length,targetIdx=Math.floor(Math.random()*segCount),extraRot=1800+(360/segCount)*targetIdx;
   canvas.style.transform=`rotate(${extraRot}deg)`;
@@ -1576,12 +1602,10 @@ function renderScenePartBody(movie,part,totalParts,unlockedParts){const el=docum
 window.switchScenePart = function(movieId,part,totalParts){sceneCurrentPart[movieId]=part;document.querySelectorAll('.scene-tab-btn').forEach((btn,i)=>{btn.classList.remove('active');if(i===part)btn.classList.add('active');});renderScenePartBody(currentMovie,part,totalParts,getSceneProgress(movieId));};
 window.watchSceneAd = function(movieId,part){
   const adUrl=resolveAdUrl(adCount);
-  if(adCooldown){ if(adUrl)window.open(adUrl,'_blank'); return; }
-  if(adUrl)window.open(adUrl,'_blank');
+  if(adCooldown){ if(adUrl)openAdFast(adUrl); return; }
+  if(adUrl)openAdFast(adUrl);
   adCooldown=true;
-  const requiredSecs=parseInt(unlockSettings.countdownSecs||15);
   startAdWatchVerification({
-    requiredSeconds: requiredSecs,
     getBtn: () => document.getElementById('sceneAdBtn'),
     getCdEl: () => document.getElementById('sceneCd'),
     onComplete: () => {
