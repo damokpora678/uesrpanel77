@@ -49,7 +49,7 @@
 #adBottomBar{position:absolute;bottom:0;left:0;right:0;z-index:10001;pointer-events:none}
 #adProgLine{height:4px;background:rgba(255,255,255,.15)}
 #adProgFill{height:100%;background:linear-gradient(90deg,var(--p),var(--pl));width:0%;transition:width .9s linear}
-#adClaimBtn{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:10002;background:linear-gradient(135deg,var(--p),var(--pl));color:#fff;border:none;border-radius:50px;padding:16px 44px;font-size:16px;font-weight:800;font-family:'Outfit',sans-serif;cursor:pointer;box-shadow:0 0 30px var(--pglow),0 8px 24px rgba(0,0,0,.5);display:none;animation:popIn .4s ease}
+#adClaimBtn{position:absolute;bottom:24px;left:50%;transform:translateX(-50%);z-index:10002;background:linear-gradient(135deg,var(--p),var(--pl));color:#fff;border:none;border-radius:50px;padding:16px 44px;font-size:16px;font-weight:800;font-family:'Outfit',sans-serif;cursor:pointer;box-shadow:0 0 30px var(--pglow),0 8px 24px rgba(0,0,0,.5);display:none;animation:popIn .4s ease;pointer-events:auto;touch-action:manipulation;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}#adClaimBtn:not(:disabled){-webkit-appearance:none;appearance:none}#adClaimBtn:disabled{opacity:0.6;cursor:not-allowed}#adClaimBtn:not(:disabled):active{background:linear-gradient(135deg,var(--pl),var(--p));transform:translateX(-50%) scale(0.95)}
 @keyframes popIn{from{transform:translateX(-50%) scale(.7);opacity:0}to{transform:translateX(-50%) scale(1);opacity:1}}
 #adNoUrl{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:var(--bg);z-index:10003;text-align:center;padding:30px}
 
@@ -200,7 +200,7 @@
     <div class="as-left">📺 Watch to earn</div>
     <div class="as-right">+৳<span id="avReward">1</span></div>
   </div>
-  <iframe id="adFrame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-popups allow-forms" allowfullscreen></iframe>
+  <iframe id="adFrame" src="about:blank" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-presentation" allowfullscreen></iframe>
   <div id="adNoUrl">
     <div style="font-size:48px">📺</div>
     <div style="font-size:16px;font-weight:700;color:var(--t1)">Ad is loading...</div>
@@ -344,49 +344,70 @@ function renderAdChips(used) {
 
 // ── PICK AD URL ──────────────────────────────────────
 function pickAdUrl() {
-  const urls = [cfg.adsterraUrl, cfg.monetagUrl, cfg.smartlinkUrl].filter(Boolean);
+  const urls = [cfg.adsterraUrl, cfg.monetagUrl, cfg.smartlinkUrl].filter(u => u && u.trim().length > 0);
   if (!urls.length) return null;
   return urls[Math.floor(Math.random() * urls.length)];
 }
 
 // ── OPEN AD ──────────────────────────────────────────
 function openAd(type, taskId, reward) {
+  if (!uid || !userData) {
+    toast('❌ Please login first', 'err');
+    return;
+  }
+  
   pendingType = type;
   currentTaskId = taskId || null;
-  currentReward = reward || (cfg.adReward||1);
+  currentReward = parseFloat(reward) || parseFloat(cfg.adReward||1);
   adDone = false;
 
+  // Reset UI
   document.getElementById('avReward').textContent = currentReward;
   document.getElementById('claimAmt').textContent = currentReward;
   document.getElementById('adClaimBtn').style.display = 'none';
+  document.getElementById('adClaimBtn').disabled = false;
   document.getElementById('adProgFill').style.width = '0%';
   document.getElementById('adRingFill').style.strokeDashoffset = '0';
   document.getElementById('adRingNum').textContent = AD_DURATION;
   document.getElementById('noUrlCount').textContent = AD_DURATION;
 
+  // Get ad URL
   const adUrl = pickAdUrl();
   const frame = document.getElementById('adFrame');
   const noUrl = document.getElementById('adNoUrl');
-  if (adUrl) {
-    frame.src = adUrl;
+  const viewer = document.getElementById('adViewer');
+  
+  viewer.style.display = 'flex';
+  
+  if (adUrl && adUrl.trim()) {
     frame.style.display = 'block';
     noUrl.style.display = 'none';
+    frame.src = 'about:blank';
+    setTimeout(() => { 
+      frame.src = adUrl; 
+    }, 100);
   } else {
     frame.src = 'about:blank';
     frame.style.display = 'none';
     noUrl.style.display = 'flex';
   }
 
-  document.getElementById('adViewer').style.display = 'flex';
-
+  // Clear existing timer
+  clearInterval(adTimer);
+  
+  // Start countdown
   let rem = AD_DURATION;
-  adTimer = setInterval(async () => {
+  adTimer = setInterval(() => {
     rem--;
     const pct = (AD_DURATION - rem) / AD_DURATION;
-    document.getElementById('adProgFill').style.width = (pct*100)+'%';
-    document.getElementById('adRingFill').style.strokeDashoffset = String(CIRC*(1-pct));
+    const fillWidth = (pct * 100);
+    const ringOffset = CIRC * (1 - pct);
+    
+    document.getElementById('adProgFill').style.width = fillWidth + '%';
+    document.getElementById('adRingFill').style.strokeDashoffset = String(ringOffset);
     document.getElementById('adRingNum').textContent = rem;
     document.getElementById('noUrlCount').textContent = rem;
+    
     if (rem <= 0) {
       clearInterval(adTimer);
       adDone = true;
@@ -396,47 +417,143 @@ function openAd(type, taskId, reward) {
   }, 1000);
 }
 
-document.getElementById('adClaimBtn').addEventListener('click', async () => {
-  if (!adDone) return;
-  await giveReward();
-  closeAd();
-  showRewardPop(currentReward);
+document.getElementById('adClaimBtn').addEventListener('click', async function(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  
+  if (!adDone) {
+    toast('⏳ Still watching ad...', 'warn');
+    return;
+  }
+  
+  if (!uid) {
+    toast('❌ Please login first', 'err');
+    return;
+  }
+  
+  if (currentReward <= 0) {
+    toast('❌ Invalid reward', 'err');
+    return;
+  }
+  
+  const btn = this;
+  btn.disabled = true;
+  
+  try {
+    await giveReward();
+    closeAd();
+    showRewardPop(currentReward);
+  } catch (err) {
+    console.error('Claim error:', err);
+    toast('❌ Error: ' + (err.message || 'Claim failed'), 'err');
+    btn.disabled = false;
+  }
 });
 
 async function giveReward() {
   const r = currentReward;
-  if (pendingType === 'ad') {
-    await updateDoc(doc(db,'users',uid),{balance:increment(r),totalEarned:increment(r),adsWatched:increment(1)});
-    const newCount = getAdCountToday() + 1;
-    setAdCountToday(newCount);
-    userData.balance = (userData.balance||0) + r;
-    document.getElementById('tbBal').textContent = parseFloat(userData.balance).toFixed(2);
-    const remaining = Math.max(0, MAX_ADS - newCount);
-    document.getElementById('adRemain').textContent = remaining;
-    renderAdChips(newCount);
-    if (remaining <= 0) {
-      document.getElementById('adBtn').disabled = true;
-      document.getElementById('adStatus').textContent = '⏳ Daily limit reached. Come back tomorrow!';
+  
+  if (!r || r <= 0 || isNaN(r)) {
+    throw new Error('Invalid reward amount');
+  }
+  
+  if (!uid) {
+    throw new Error('User not authenticated');
+  }
+  
+  try {
+    if (pendingType === 'ad') {
+      // Update Firebase
+      const userRef = doc(db, 'users', uid);
+      await updateDoc(userRef, {
+        balance: increment(r),
+        totalEarned: increment(r),
+        adsWatched: increment(1),
+        lastAdTime: new Date().toISOString()
+      });
+      
+      // Update local count
+      const newCount = getAdCountToday() + 1;
+      setAdCountToday(newCount);
+      
+      // Update UI
+      userData.balance = (userData.balance || 0) + r;
+      document.getElementById('tbBal').textContent = parseFloat(userData.balance).toFixed(2);
+      
+      const remaining = Math.max(0, MAX_ADS - newCount);
+      document.getElementById('adRemain').textContent = remaining;
+      renderAdChips(newCount);
+      
+      if (remaining <= 0) {
+        const btn = document.getElementById('adBtn');
+        if (btn) {
+          btn.disabled = true;
+          document.getElementById('adStatus').textContent = '⏳ Daily limit reached. Come back tomorrow!';
+        }
+      }
+      
+      toast(`+৳${r} Ad reward! 📺`, 'ok');
+      
+    } else if (pendingType === 'task' && currentTaskId) {
+      // Get fresh user data
+      const userRef = doc(db, 'users', uid);
+      const userSnap = await getDoc(userRef);
+      
+      if (!userSnap.exists()) {
+        throw new Error('User document not found');
+      }
+      
+      const freshData = userSnap.data();
+      const claimedTasks = freshData.claimedTasks || [];
+      
+      if (claimedTasks.includes(currentTaskId)) {
+        throw new Error('Already claimed');
+      }
+      
+      // Update Firebase
+      await updateDoc(userRef, {
+        balance: increment(r),
+        totalEarned: increment(r),
+        claimedTasks: arrayUnion(currentTaskId),
+        lastTaskTime: new Date().toISOString()
+      });
+      
+      // Update local state
+      userData.balance = (userData.balance || 0) + r;
+      userData.claimedTasks = [...(userData.claimedTasks || []), currentTaskId];
+      document.getElementById('tbBal').textContent = parseFloat(userData.balance).toFixed(2);
+      
+      toast(`+৳${r} Task reward! ✅`, 'ok');
+      
+      // Reload tasks after delay
+      setTimeout(() => loadTasks(), 300);
     }
-    toast(`+৳${r} Ad reward! 📺`, 'ok');
-  } else if (pendingType === 'task' && currentTaskId) {
-    const fresh = (await getDoc(doc(db,'users',uid))).data();
-    if ((fresh.claimedTasks||[]).includes(currentTaskId)) { toast('Already claimed!','warn'); return; }
-    await updateDoc(doc(db,'users',uid),{balance:increment(r),totalEarned:increment(r),claimedTasks:arrayUnion(currentTaskId)});
-    userData.balance = (userData.balance||0) + r;
-    userData.claimedTasks = [...(userData.claimedTasks||[]),currentTaskId];
-    document.getElementById('tbBal').textContent = parseFloat(userData.balance).toFixed(2);
-    toast(`+৳${r} Task reward! ✅`, 'ok');
-    loadTasks();
+  } catch (err) {
+    console.error('giveReward error:', err);
+    throw err;
   }
 }
 
 function closeAd() {
-  clearInterval(adTimer);
-  document.getElementById('adFrame').src = 'about:blank';
-  document.getElementById('adViewer').style.display = 'none';
-  document.getElementById('taskModal').classList.remove('open');
-  adDone = false; pendingType = null;
+  if (adTimer) {
+    clearInterval(adTimer);
+    adTimer = null;
+  }
+  
+  const frame = document.getElementById('adFrame');
+  const viewer = document.getElementById('adViewer');
+  const modal = document.getElementById('taskModal');
+  const claimBtn = document.getElementById('adClaimBtn');
+  
+  if (frame) frame.src = 'about:blank';
+  if (viewer) viewer.style.display = 'none';
+  if (modal) modal.classList.remove('open');
+  if (claimBtn) claimBtn.disabled = false;
+  
+  adDone = false;
+  pendingType = null;
+  currentTaskId = null;
+  currentReward = 0;
 }
 
 function showRewardPop(amt) {
@@ -446,10 +563,19 @@ function showRewardPop(amt) {
   setTimeout(() => { pop.style.display = 'none'; }, 2200);
 }
 
-document.getElementById('adBtn').addEventListener('click', () => {
+document.getElementById('adBtn').addEventListener('click', function() {
+  if (!uid || !userData) {
+    toast('❌ Please login first', 'err');
+    return;
+  }
+  
   const used = getAdCountToday();
-  if (used >= MAX_ADS) { toast('Daily ad limit reached! Come back tomorrow.','warn'); return; }
-  openAd('ad', null, cfg.adReward||1);
+  if (used >= MAX_ADS) {
+    toast('Daily ad limit reached! Come back tomorrow.', 'warn');
+    return;
+  }
+  
+  openAd('ad', null, cfg.adReward || 1);
 });
 
 // ── DAILY BONUS ──────────────────────────────────────
